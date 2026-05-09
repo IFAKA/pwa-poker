@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import type { CSSProperties, Dispatch, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowLeft,
   ArrowUp,
   Check,
   Circle,
@@ -105,9 +104,15 @@ type FeedbackEvent =
   | "nav"
   | "press"
   | "amountStep"
+  | "amountDecrease"
+  | "amountIncrease"
+  | "amountMinimum"
+  | "amountPot"
+  | "amountAllIn"
   | "check"
   | "call"
   | "raise"
+  | "allIn"
   | "fold"
   | "streetAdvance"
   | "dealConfirmed"
@@ -146,6 +151,7 @@ type FeedbackState = {
 };
 
 type AudioContextConstructor = new () => AudioContext;
+const audioVolumeMultiplier = 3.4;
 
 const feedbackProfiles: Record<FeedbackEvent, FeedbackProfile> = {
   nav: {
@@ -171,8 +177,82 @@ const feedbackProfiles: Record<FeedbackEvent, FeedbackProfile> = {
     haptic: 4,
     intensity: "subtle",
   },
+  amountDecrease: {
+    audio: {
+      type: "triangle",
+      notes: [540, 410],
+      durationMs: 58,
+      peakGain: 0.01,
+      attackMs: 2,
+      gapMs: 3,
+      noteDurationsMs: [22, 26],
+      endNotes: [500, 360],
+    },
+    haptic: 4,
+    intensity: "subtle",
+  },
+  amountIncrease: {
+    audio: {
+      type: "triangle",
+      notes: [460, 610],
+      durationMs: 58,
+      peakGain: 0.011,
+      attackMs: 2,
+      gapMs: 3,
+      noteDurationsMs: [22, 26],
+      endNotes: [500, 680],
+    },
+    haptic: 5,
+    intensity: "subtle",
+  },
+  amountMinimum: {
+    audio: {
+      type: "sine",
+      notes: [294],
+      durationMs: 72,
+      peakGain: 0.014,
+      attackMs: 7,
+      endNotes: [262],
+    },
+    haptic: 6,
+    intensity: "subtle",
+  },
+  amountPot: {
+    audio: {
+      type: "square",
+      notes: [392, 392, 523],
+      durationMs: 112,
+      peakGain: 0.009,
+      attackMs: 2,
+      gapMs: 5,
+      noteDurationsMs: [22, 22, 34],
+    },
+    haptic: [4, 10],
+    intensity: "subtle",
+  },
+  amountAllIn: {
+    audio: {
+      type: "sawtooth",
+      notes: [330, 494, 659],
+      durationMs: 138,
+      peakGain: 0.013,
+      attackMs: 4,
+      gapMs: 6,
+      detuneCents: [0, 5, 0],
+    },
+    haptic: [5, 12, 7],
+    intensity: "commit",
+  },
   check: {
-    audio: { type: "sine", notes: [294, 370], durationMs: 104, peakGain: 0.019, attackMs: 8, gapMs: 16 },
+    audio: {
+      type: "square",
+      notes: [1180, 1480],
+      durationMs: 66,
+      peakGain: 0.01,
+      attackMs: 1,
+      gapMs: 8,
+      noteDurationsMs: [14, 18],
+    },
     haptic: 10,
     intensity: "commit",
   },
@@ -199,6 +279,19 @@ const feedbackProfiles: Record<FeedbackEvent, FeedbackProfile> = {
       detuneCents: [0, 4, 0],
     },
     haptic: [7, 16, 9],
+    intensity: "commit",
+  },
+  allIn: {
+    audio: {
+      type: "sawtooth",
+      notes: [294, 440, 659, 988],
+      durationMs: 186,
+      peakGain: 0.016,
+      attackMs: 4,
+      gapMs: 5,
+      detuneCents: [0, 3, 5, 0],
+    },
+    haptic: [8, 14, 8, 18],
     intensity: "commit",
   },
   fold: {
@@ -428,8 +521,10 @@ function useInteractionFeedback(settings: FeedbackSettings) {
       const attack = (profile.audio.attackMs ?? 8) / 1000;
       const gain = context.createGain();
 
+      const peakGain = Math.min(profile.audio.peakGain * audioVolumeMultiplier, 0.11);
+
       gain.gain.setValueAtTime(0.0001, startAt);
-      gain.gain.linearRampToValueAtTime(profile.audio.peakGain, startAt + attack);
+      gain.gain.linearRampToValueAtTime(peakGain, startAt + attack);
       gain.gain.exponentialRampToValueAtTime(0.0001, startAt + totalDuration);
       gain.connect(context.destination);
 
@@ -478,7 +573,6 @@ function useInteractionFeedback(settings: FeedbackSettings) {
 
   return {
     emitFeedback,
-    feedbackKey: lastFeedback?.key ?? 0,
     lastFeedbackEvent: lastFeedback,
   };
 }
@@ -492,7 +586,73 @@ function feedbackPulseClass(
     return "";
   }
 
-  return cn("feedback-pulse", `feedback-${lastFeedback.intensity}`, className);
+  return cn(
+    lastFeedback.key % 2 === 0 ? "feedback-pulse-even" : "feedback-pulse-odd",
+    `feedback-${lastFeedback.intensity}`,
+    className,
+  );
+}
+
+function AnimatedNumber({
+  className,
+  value,
+}: {
+  className?: string;
+  value: number;
+}) {
+  const [displayValue, setDisplayValue] = useState(value);
+  const [direction, setDirection] = useState<"up" | "down" | "same">("same");
+  const previousValueRef = useRef(value);
+
+  useEffect(() => {
+    const startValue = previousValueRef.current;
+    const change = value - startValue;
+
+    if (change === 0) {
+      setDirection("same");
+      setDisplayValue(value);
+      return;
+    }
+
+    setDirection(change > 0 ? "up" : "down");
+    let frameId = 0;
+    const startedAt = window.performance.now();
+    const durationMs = Math.min(520, Math.max(220, Math.abs(change) * 28));
+
+    const animate = (now: number) => {
+      const progress = Math.min((now - startedAt) / durationMs, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+
+      setDisplayValue(Math.round(startValue + change * eased));
+
+      if (progress < 1) {
+        frameId = window.requestAnimationFrame(animate);
+      } else {
+        previousValueRef.current = value;
+      }
+    };
+
+    frameId = window.requestAnimationFrame(animate);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      previousValueRef.current = value;
+    };
+  }, [value]);
+
+  return (
+    <span
+      key={`${direction}-${value}`}
+      className={cn(
+        "animated-number",
+        direction === "up" && "animated-number-up",
+        direction === "down" && "animated-number-down",
+        className,
+      )}
+    >
+      {currency(displayValue)}
+    </span>
+  );
 }
 
 function nextActiveIndex(players: Player[], fromIndex: number) {
@@ -502,7 +662,7 @@ function nextActiveIndex(players: Player[], fromIndex: number) {
 
   for (let offset = 1; offset <= players.length; offset += 1) {
     const index = rotateIndex(fromIndex, players.length, offset);
-    if (players[index]?.inHand && players[index].stack >= 0) {
+    if (players[index]?.inHand && players[index].stack > 0) {
       return index;
     }
   }
@@ -549,6 +709,25 @@ function bettingIsClosed(state: TableState) {
   });
 }
 
+function allContendersAreAllIn(state: TableState) {
+  const contenders = state.players.filter((player) => player.inHand);
+  return contenders.length > 1 && contenders.every((player) => player.stack === 0);
+}
+
+function maxSinglePotBetTotal(state: TableState) {
+  const contenders = state.players.filter((player) => player.inHand);
+  if (!contenders.length) {
+    return state.currentBet;
+  }
+
+  return Math.max(
+    state.currentBet,
+    Math.min(
+      ...contenders.map((player) => (state.contributions[player.id] ?? 0) + player.stack),
+    ),
+  );
+}
+
 function nextStreetAfter(street: Street) {
   if (street === "Preflop") return "Flop";
   if (street === "Flop") return "Turn";
@@ -562,7 +741,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
   const [hasHydrated, setHasHydrated] = useState(false);
   const [newPlayerName, setNewPlayerName] = useState("");
   const [chipAmount, setChipAmount] = useState(4);
-  const { emitFeedback, feedbackKey, lastFeedbackEvent } = useInteractionFeedback(table.feedback);
+  const { emitFeedback, lastFeedbackEvent } = useInteractionFeedback(table.feedback);
 
   useEffect(() => {
     const restoreId = window.setTimeout(() => {
@@ -651,7 +830,10 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
     }
 
     if (toCall > 0) {
-      return `Put in ${currency(toCall)} more to stay in`;
+      const callAmount = currentPlayer ? Math.min(toCall, currentPlayer.stack) : toCall;
+      return callAmount < toCall
+        ? `Call all in for ${currency(callAmount)}`
+        : `Put in ${currency(callAmount)} more to stay in`;
     }
 
     return table.currentBet > 0
@@ -718,6 +900,10 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
     }
 
     if (bettingIsClosed(state)) {
+      if (allContendersAreAllIn(state)) {
+        return resetBettingForStreet(state, "Showdown");
+      }
+
       const next = nextStreetAfter(state.street);
       return resetBettingForStreet(state, next);
     }
@@ -735,7 +921,9 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
       return;
     }
 
-    emitFeedback(action);
+    const actorAllInTotal = (table.contributions[actor.id] ?? 0) + actor.stack;
+    const isAllInRaise = action === "raise" && (raiseTo ?? 0) >= actorAllInTotal;
+    emitFeedback(isAllInRaise ? "allIn" : action);
     setTable((current) => {
       const currentActor = current.players[current.currentPlayerIndex];
       if (!currentActor) {
@@ -744,15 +932,31 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
 
       const previousContribution = current.contributions[currentActor.id] ?? 0;
       const owed = Math.max(0, current.currentBet - previousContribution);
-      const targetBet = action === "raise" ? Math.max(raiseTo ?? current.bigBlind, current.currentBet + current.bigBlind) : current.currentBet;
+      const raiseCap = Math.min(
+        previousContribution + currentActor.stack,
+        maxSinglePotBetTotal(current),
+      );
+      const minimumRaiseTo = current.currentBet + current.bigBlind;
+      const requestedRaiseTo = Math.max(raiseTo ?? minimumRaiseTo, minimumRaiseTo);
+      const targetBet =
+        action === "raise" ? Math.min(requestedRaiseTo, raiseCap) : current.currentBet;
+      const effectiveAction =
+        action === "raise" && targetBet <= current.currentBet
+          ? owed > 0
+            ? "call"
+            : "check"
+          : action;
       const amount =
-        action === "fold"
+        effectiveAction === "fold"
           ? 0
-          : action === "raise"
+          : effectiveAction === "raise"
             ? Math.min(Math.max(0, targetBet - previousContribution), currentActor.stack)
             : Math.min(owed, currentActor.stack);
       const totalContribution = previousContribution + amount;
-      const nextCurrentBet = action === "raise" ? Math.max(current.currentBet, totalContribution) : current.currentBet;
+      const nextCurrentBet =
+        effectiveAction === "raise"
+          ? Math.max(current.currentBet, totalContribution)
+          : current.currentBet;
 
       const nextState: TableState = {
         ...current,
@@ -763,19 +967,21 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
           [currentActor.id]: totalContribution,
         },
         actedPlayerIds:
-          action === "raise"
+          effectiveAction === "raise"
             ? [currentActor.id]
             : Array.from(new Set([...current.actedPlayerIds, currentActor.id])),
         ledger: [
           {
             id: nextId(),
             label:
-              action === "fold"
+              effectiveAction === "fold"
                 ? `${currentActor.name} folds`
-                : action === "check"
+                : effectiveAction === "check"
                   ? `${currentActor.name} checks`
-                  : action === "call"
-                    ? `${currentActor.name} calls ${currency(amount)}`
+                  : effectiveAction === "call"
+                    ? amount < owed
+                      ? `${currentActor.name} calls all in ${currency(amount)}`
+                      : `${currentActor.name} calls ${currency(amount)}`
                     : `${currentActor.name} raises to ${currency(totalContribution)}`,
             amount,
           },
@@ -785,7 +991,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
           player.id === currentActor.id
             ? {
                 ...player,
-                inHand: action === "fold" ? false : player.inHand,
+                inHand: effectiveAction === "fold" ? false : player.inHand,
                 stack: Math.max(0, player.stack - amount),
               }
             : player,
@@ -879,10 +1085,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
   return (
     <main className="min-h-svh overflow-hidden bg-background px-4 pb-[calc(env(safe-area-inset-bottom)+68px)] pt-[calc(env(safe-area-inset-top)+8px)] text-foreground">
       <div className="app-frame mx-auto flex h-[calc(100svh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-76px)] w-full max-w-md flex-col overflow-hidden">
-        <TopBar
-          pathname={pathname}
-          screen={screen}
-        />
+        <TopBar screen={screen} />
 
         {screen === "table" ? (
           <HandScreen
@@ -896,7 +1099,6 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
             awardPot={awardPot}
             chipAmount={chipAmount}
             currentPlayer={currentPlayer}
-            feedbackKey={feedbackKey}
             instruction={instruction}
             lastFeedbackEvent={lastFeedbackEvent}
             newPlayerName={newPlayerName}
@@ -933,7 +1135,6 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
       </div>
       <BottomNav
         emitFeedback={emitFeedback}
-        feedbackKey={feedbackKey}
         lastFeedbackEvent={lastFeedbackEvent}
         pathname={pathname}
       />
@@ -941,13 +1142,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
   );
 }
 
-function TopBar({
-  pathname,
-  screen,
-}: {
-  pathname: string;
-  screen: Screen;
-}) {
+function TopBar({ screen }: { screen: Screen }) {
   if (screen === "table") {
     return null;
   }
@@ -962,13 +1157,6 @@ function TopBar({
   return (
     <header className="motion-panel mb-4 flex min-h-12 items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1">
-        {pathname !== "/" ? (
-          <Button aria-label="Back to current hand" asChild size="icon" variant="ghost">
-            <Link href="/">
-              <ArrowLeft aria-hidden="true" />
-            </Link>
-          </Button>
-        ) : null}
         <h1 className="truncate text-[34px] font-bold leading-none">{title}</h1>
       </div>
       <div className="size-11" aria-hidden="true" />
@@ -985,7 +1173,6 @@ function HandScreen({
   chipAmount,
   currentPlayer,
   emitFeedback,
-  feedbackKey,
   instruction,
   lastFeedbackEvent,
   newPlayerName,
@@ -1004,7 +1191,6 @@ function HandScreen({
   chipAmount: number;
   currentPlayer?: Player;
   emitFeedback: (event: FeedbackEvent, payload?: FeedbackPayload) => void;
-  feedbackKey: number;
   instruction: string;
   lastFeedbackEvent: FeedbackState | null;
   newPlayerName: string;
@@ -1033,9 +1219,8 @@ function HandScreen({
         className={cn(
           "motion-surface mb-2 rounded-xl bg-secondary px-4 py-3",
           needsWinner && "bg-primary/10",
-          feedbackPulseClass(lastFeedbackEvent, ["check", "call", "raise", "fold", "potAwarded"]),
+          feedbackPulseClass(lastFeedbackEvent, ["check", "call", "raise", "allIn", "fold", "potAwarded"]),
         )}
-        key={`hand-status-${feedbackKey}`}
       >
         <div className="grid grid-cols-[1fr_auto] items-start gap-3">
           <div className="min-w-0">
@@ -1043,10 +1228,9 @@ function HandScreen({
               Hand {table.handNumber} · {table.street}
             </p>
             <p
-              key={statusLabel}
               className={cn(
                 "motion-panel mt-1 inline-block max-w-full truncate rounded-lg border-2 px-2.5 py-1 text-2xl font-black leading-none shadow-[2px_2px_0_#000] transition-[background-color,border-color,color,box-shadow,transform] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
-                feedbackPulseClass(lastFeedbackEvent, ["check", "call", "raise", "fold"]),
+                feedbackPulseClass(lastFeedbackEvent, ["check", "call", "raise", "allIn", "fold"]),
                 needsWinner
                   ? "border-black bg-primary text-primary-foreground"
                   : isShowdown
@@ -1061,13 +1245,12 @@ function HandScreen({
             <p className="text-[11px] font-semibold text-muted-foreground">Total pot</p>
             <p className="text-3xl font-black leading-none">
               <span
-                key={`pot-${table.pot}-${feedbackKey}`}
                 className={cn(
                   "motion-value",
-                  feedbackPulseClass(lastFeedbackEvent, ["call", "raise", "potAwarded", "newHand"]),
+                  feedbackPulseClass(lastFeedbackEvent, ["call", "raise", "allIn", "potAwarded", "newHand"]),
                 )}
               >
-                {currency(table.pot)}
+                <AnimatedNumber value={table.pot} />
               </span>
             </p>
           </div>
@@ -1090,17 +1273,14 @@ function HandScreen({
               index <= streetIndex && "scale-y-125 bg-primary",
               feedbackPulseClass(lastFeedbackEvent, ["streetAdvance", "dealConfirmed"], "feedback-street"),
             )}
-            key={`${street}-${feedbackKey}`}
+            key={street}
             title={street}
           />
         ))}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto pb-4 pt-2 [-webkit-overflow-scrolling:touch]">
-        <div
-          className="motion-list grid gap-3"
-          key={`${table.street}-${table.awaitingDeal}-${table.pot > 0}-${currentPlayer?.id ?? "none"}`}
-        >
+        <div className="motion-list grid gap-3">
           {table.players.length < 2 ? (
             <AddPlayerRow
               addPlayer={addPlayer}
@@ -1114,7 +1294,6 @@ function HandScreen({
           ) : table.street === "Showdown" ? (
             table.pot > 0 ? (
               <WinnerList
-                feedbackKey={feedbackKey}
                 lastFeedbackEvent={lastFeedbackEvent}
                 players={activePlayers}
                 awardPot={awardPot}
@@ -1142,7 +1321,6 @@ function HandScreen({
               chipAmount={chipAmount}
               currentPlayer={currentPlayer}
               emitFeedback={emitFeedback}
-              feedbackKey={feedbackKey}
               lastFeedbackEvent={lastFeedbackEvent}
               setChipAmount={setChipAmount}
               table={table}
@@ -1160,7 +1338,6 @@ function BettingAction({
   chipAmount,
   currentPlayer,
   emitFeedback,
-  feedbackKey,
   lastFeedbackEvent,
   setChipAmount,
   table,
@@ -1170,7 +1347,6 @@ function BettingAction({
   chipAmount: number;
   currentPlayer?: Player;
   emitFeedback: (event: FeedbackEvent, payload?: FeedbackPayload) => void;
-  feedbackKey: number;
   lastFeedbackEvent: FeedbackState | null;
   setChipAmount: Dispatch<SetStateAction<number>>;
   table: TableState;
@@ -1183,9 +1359,13 @@ function BettingAction({
   }>({ intervalId: null, timeoutId: null, startedAt: 0 });
   const raiseMinimum = Math.max(table.currentBet + table.bigBlind, table.bigBlind);
   const currentContribution = currentPlayer ? table.contributions[currentPlayer.id] ?? 0 : 0;
-  const maxRaiseTo = currentPlayer ? currentContribution + currentPlayer.stack : raiseMinimum;
+  const playerAllInTotal = currentPlayer ? currentContribution + currentPlayer.stack : raiseMinimum;
+  const maxRaiseTo = currentPlayer
+    ? Math.min(playerAllInTotal, maxSinglePotBetTotal(table))
+    : raiseMinimum;
   const raiseTo = Math.min(Math.max(chipAmount, raiseMinimum), maxRaiseTo);
-  const isAllIn = currentPlayer ? raiseTo >= maxRaiseTo : false;
+  const isAllIn = currentPlayer ? raiseTo >= playerAllInTotal : false;
+  const isCappedByEffectiveStack = currentPlayer ? maxRaiseTo < playerAllInTotal : false;
   const canRaise = Boolean(currentPlayer && maxRaiseTo > table.currentBet);
   const chipValues = Array.from(
     new Set(
@@ -1199,10 +1379,10 @@ function BettingAction({
     Math.max(raiseMinimum, table.currentBet + table.pot + toCall),
   );
 
-  function setRaiseTo(amount: number, shouldEmit = true) {
+  function setRaiseTo(amount: number, feedbackEvent: FeedbackEvent = "amountStep") {
     const nextAmount = Math.min(Math.max(amount, raiseMinimum), maxRaiseTo);
-    if (shouldEmit && nextAmount !== raiseTo) {
-      emitFeedback("amountStep");
+    if (nextAmount !== raiseTo) {
+      emitFeedback(feedbackEvent);
     }
     setChipAmount(nextAmount);
   }
@@ -1228,7 +1408,7 @@ function BettingAction({
         maxRaiseTo,
       );
       if (nextAmount !== current) {
-        emitFeedback("amountStep");
+        emitFeedback(direction > 0 ? "amountIncrease" : "amountDecrease");
       }
       return nextAmount;
     });
@@ -1262,19 +1442,31 @@ function BettingAction({
             <p className="mt-1 text-sm font-bold text-muted-foreground">Total bet would be</p>
             <p className="mt-0.5 text-3xl font-black leading-none">
               <span
-                key={`raise-${raiseTo}-${feedbackKey}`}
                 className={cn(
                   "motion-value",
-                  feedbackPulseClass(lastFeedbackEvent, ["amountStep"], "feedback-raise"),
+                  feedbackPulseClass(
+                    lastFeedbackEvent,
+                    [
+                      "amountStep",
+                      "amountDecrease",
+                      "amountIncrease",
+                      "amountMinimum",
+                      "amountPot",
+                      "amountAllIn",
+                    ],
+                    "feedback-raise",
+                  ),
                 )}
               >
-                {currency(raiseTo)}
+                <AnimatedNumber value={raiseTo} />
               </span>
             </p>
           </div>
           <div className="text-right text-xs font-semibold text-muted-foreground">
             <p>Minimum total {currency(Math.min(raiseMinimum, maxRaiseTo))}</p>
-            <p>All in total {currency(maxRaiseTo)}</p>
+            <p>
+              {isCappedByEffectiveStack ? "Max total" : "All in total"} {currency(maxRaiseTo)}
+            </p>
           </div>
         </div>
 
@@ -1311,7 +1503,7 @@ function BettingAction({
                 style={{ "--motion-delay": `${index * 34}ms` } as CSSProperties}
                 type="button"
                 variant="outline"
-                onClick={() => setRaiseTo(raiseTo + amount)}
+                onClick={() => setRaiseTo(raiseTo + amount, "amountStep")}
               >
                 {currency(amount)}
               </Button>
@@ -1348,7 +1540,7 @@ function BettingAction({
             style={{ "--motion-delay": "0ms" } as CSSProperties}
             type="button"
             variant={raiseTo === Math.min(raiseMinimum, maxRaiseTo) ? "default" : "outline"}
-            onClick={() => setRaiseTo(raiseMinimum)}
+            onClick={() => setRaiseTo(raiseMinimum, "amountMinimum")}
           >
             Minimum
           </Button>
@@ -1358,7 +1550,7 @@ function BettingAction({
             style={{ "--motion-delay": "34ms" } as CSSProperties}
             type="button"
             variant={raiseTo === potRaiseTo ? "default" : "outline"}
-            onClick={() => setRaiseTo(potRaiseTo)}
+            onClick={() => setRaiseTo(potRaiseTo, "amountPot")}
           >
             Pot
           </Button>
@@ -1367,10 +1559,10 @@ function BettingAction({
             disabled={!canRaise}
             style={{ "--motion-delay": "68ms" } as CSSProperties}
             type="button"
-            variant={isAllIn ? "default" : "outline"}
-            onClick={() => setRaiseTo(maxRaiseTo)}
+            variant={raiseTo === maxRaiseTo ? "default" : "outline"}
+            onClick={() => setRaiseTo(maxRaiseTo, "amountAllIn")}
           >
-            All in
+            {isCappedByEffectiveStack ? "Max" : "All in"}
           </Button>
         </div>
 
@@ -1388,7 +1580,9 @@ function BettingAction({
       <div className="motion-list grid grid-cols-2 gap-2">
         {toCall > 0 ? (
           <Button
-            aria-label={`Call ${currency(toCall)}`}
+            aria-label={`Call ${currency(
+              currentPlayer ? Math.min(toCall, currentPlayer.stack) : toCall,
+            )}`}
             className="h-14 rounded-xl text-base"
             disabled={!currentPlayer}
             style={{ "--motion-delay": "0ms" } as CSSProperties}
@@ -1396,7 +1590,7 @@ function BettingAction({
             onClick={() => applyPlayerAction("call")}
           >
             <Check aria-hidden="true" />
-            Call
+            {currentPlayer && currentPlayer.stack < toCall ? "Call all in" : "Call"}
           </Button>
         ) : (
           <Button
@@ -1428,13 +1622,11 @@ function BettingAction({
 
 function WinnerList({
   awardPot,
-  feedbackKey,
   lastFeedbackEvent,
   players,
   pot,
 }: {
   awardPot: (playerId: string) => void;
-  feedbackKey: number;
   lastFeedbackEvent: FeedbackState | null;
   players: Player[];
   pot: number;
@@ -1445,7 +1637,6 @@ function WinnerList({
         "motion-list grid gap-2",
         feedbackPulseClass(lastFeedbackEvent, ["potAwarded"], "feedback-winners"),
       )}
-      key={`winners-${feedbackKey}`}
     >
       {players.map((player, index) => (
         <Button
@@ -1796,12 +1987,10 @@ function PlayerEditor({
 
 function BottomNav({
   emitFeedback,
-  feedbackKey,
   lastFeedbackEvent,
   pathname,
 }: {
   emitFeedback: (event: FeedbackEvent, payload?: FeedbackPayload) => void;
-  feedbackKey: number;
   lastFeedbackEvent: FeedbackState | null;
   pathname: string;
 }) {
@@ -1812,7 +2001,6 @@ function BottomNav({
           "motion-list mx-auto grid max-w-md grid-cols-4 gap-1",
           feedbackPulseClass(lastFeedbackEvent, ["nav"], "feedback-nav"),
         )}
-        key={`nav-${feedbackKey}`}
       >
         {navItems.map((item, index) => {
           const isActive = pathname === item.href;

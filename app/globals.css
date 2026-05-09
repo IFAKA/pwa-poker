@@ -143,21 +143,53 @@ button {
   animation: motion-value-in 180ms var(--ease-out) both;
 }
 
-.feedback-pulse {
-  animation: feedback-pulse-subtle 170ms var(--ease-out) both;
+.animated-number {
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+  min-width: 2ch;
+  will-change: transform, filter;
 }
 
-.feedback-commit {
-  animation-name: feedback-pulse-commit;
+.animated-number-up {
+  animation: animated-number-up 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.feedback-success {
-  animation-name: feedback-pulse-success;
+.animated-number-down {
+  animation: animated-number-down 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.feedback-pulse-even {
+  animation: feedback-pulse-subtle-even 170ms var(--ease-out) both;
+}
+
+.feedback-pulse-odd {
+  animation: feedback-pulse-subtle-odd 170ms var(--ease-out) both;
+}
+
+.feedback-pulse-even.feedback-commit {
+  animation-name: feedback-pulse-commit-even;
+}
+
+.feedback-pulse-odd.feedback-commit {
+  animation-name: feedback-pulse-commit-odd;
+}
+
+.feedback-pulse-even.feedback-success {
+  animation-name: feedback-pulse-success-even;
   animation-duration: 240ms;
 }
 
-.feedback-destructive {
-  animation-name: feedback-pulse-destructive;
+.feedback-pulse-odd.feedback-success {
+  animation-name: feedback-pulse-success-odd;
+  animation-duration: 240ms;
+}
+
+.feedback-pulse-even.feedback-destructive {
+  animation-name: feedback-pulse-destructive-even;
+}
+
+.feedback-pulse-odd.feedback-destructive {
+  animation-name: feedback-pulse-destructive-odd;
 }
 
 .feedback-street {
@@ -234,7 +266,41 @@ button {
   }
 }
 
-@keyframes feedback-pulse-subtle {
+@keyframes animated-number-up {
+  0% {
+    filter: blur(2px);
+    transform: translateY(0.18em) scale(0.96);
+  }
+  56% {
+    color: hsl(153 52% 46%);
+    text-shadow: 0 0 16px hsl(153 52% 46% / 0.28);
+    transform: translateY(-0.08em) scale(1.065);
+  }
+  100% {
+    filter: blur(0);
+    text-shadow: none;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes animated-number-down {
+  0% {
+    filter: blur(2px);
+    transform: translateY(-0.16em) scale(0.98);
+  }
+  56% {
+    color: hsl(var(--destructive));
+    text-shadow: 0 0 14px hsl(var(--destructive) / 0.18);
+    transform: translateY(0.08em) scale(0.94);
+  }
+  100% {
+    filter: blur(0);
+    text-shadow: none;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes feedback-pulse-subtle-even {
   0% {
     transform: scale(1);
   }
@@ -246,7 +312,19 @@ button {
   }
 }
 
-@keyframes feedback-pulse-commit {
+@keyframes feedback-pulse-subtle-odd {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.018);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes feedback-pulse-commit-even {
   0% {
     box-shadow: 0 0 0 0 hsl(var(--primary) / 0);
     transform: scale(1);
@@ -261,7 +339,22 @@ button {
   }
 }
 
-@keyframes feedback-pulse-success {
+@keyframes feedback-pulse-commit-odd {
+  0% {
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0);
+    transform: scale(1);
+  }
+  42% {
+    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.18);
+    transform: scale(1.025);
+  }
+  100% {
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0);
+    transform: scale(1);
+  }
+}
+
+@keyframes feedback-pulse-success-even {
   0% {
     box-shadow: 0 0 0 0 hsl(153 52% 46% / 0);
     transform: scale(1);
@@ -276,7 +369,40 @@ button {
   }
 }
 
-@keyframes feedback-pulse-destructive {
+@keyframes feedback-pulse-success-odd {
+  0% {
+    box-shadow: 0 0 0 0 hsl(153 52% 46% / 0);
+    transform: scale(1);
+  }
+  38% {
+    box-shadow: 0 0 0 4px hsl(153 52% 46% / 0.2);
+    transform: scale(1.035);
+  }
+  100% {
+    box-shadow: 0 0 0 0 hsl(153 52% 46% / 0);
+    transform: scale(1);
+  }
+}
+
+@keyframes feedback-pulse-destructive-even {
+  0% {
+    box-shadow: 0 0 0 0 hsl(var(--destructive) / 0);
+    transform: translateX(0);
+  }
+  35% {
+    box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.16);
+    transform: translateX(-1px);
+  }
+  70% {
+    transform: translateX(1px);
+  }
+  100% {
+    box-shadow: 0 0 0 0 hsl(var(--destructive) / 0);
+    transform: translateX(0);
+  }
+}
+
+@keyframes feedback-pulse-destructive-odd {
   0% {
     box-shadow: 0 0 0 0 hsl(var(--destructive) / 0);
     transform: translateX(0);
@@ -309,8 +435,12 @@ button {
   .motion-panel,
   .motion-list > *,
   .motion-value,
-  .feedback-pulse {
+  .animated-number,
+  .feedback-pulse-even,
+  .feedback-pulse-odd {
     transform: none !important;
+    filter: none !important;
+    text-shadow: none !important;
   }
 }
 

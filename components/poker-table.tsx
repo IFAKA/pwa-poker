@@ -12,6 +12,7 @@ import {
   Clock3,
   Minus,
   Moon,
+  PiggyBank,
   Plus,
   RotateCcw,
   Settings,
@@ -118,6 +119,8 @@ type FeedbackEvent =
   | "dealConfirmed"
   | "potAwarded"
   | "newHand"
+  | "needsChips"
+  | "rebuy"
   | "themeChanged"
   | "reset"
   | "blocked";
@@ -358,6 +361,31 @@ const feedbackProfiles: Record<FeedbackEvent, FeedbackProfile> = {
     haptic: [8, 16, 8],
     intensity: "success",
   },
+  needsChips: {
+    audio: {
+      type: "triangle",
+      notes: [220, 174],
+      durationMs: 126,
+      peakGain: 0.014,
+      attackMs: 8,
+      gapMs: 8,
+      endNotes: [196, 147],
+    },
+    haptic: [12, 18],
+    intensity: "destructive",
+  },
+  rebuy: {
+    audio: {
+      type: "sine",
+      notes: [330, 440, 587],
+      durationMs: 156,
+      peakGain: 0.018,
+      attackMs: 6,
+      gapMs: 8,
+    },
+    haptic: [7, 14],
+    intensity: "success",
+  },
   themeChanged: {
     audio: {
       type: "sine",
@@ -434,21 +462,62 @@ function rotateIndex(current: number, length: number, offset: number) {
   return length ? (current + offset) % length : 0;
 }
 
-function getBlindIndexes(dealerIndex: number, playerCount: number) {
-  if (playerCount <= 1) {
-    return { smallBlindIndex: dealerIndex, bigBlindIndex: dealerIndex };
+function playerCanPlay(player: Player) {
+  return player.stack > 0;
+}
+
+function fundedPlayers(players: Player[]) {
+  return players.filter(playerCanPlay);
+}
+
+function nextFundedIndex(players: Player[], fromIndex: number) {
+  if (!players.length) {
+    return 0;
   }
 
-  if (playerCount === 2) {
+  for (let offset = 1; offset <= players.length; offset += 1) {
+    const index = rotateIndex(fromIndex, players.length, offset);
+    if (playerCanPlay(players[index])) {
+      return index;
+    }
+  }
+
+  return fromIndex;
+}
+
+function getFundedBlindIndexes(players: Player[], dealerIndex: number) {
+  const fundedIndexes = players
+    .map((player, index) => (playerCanPlay(player) ? index : -1))
+    .filter((index) => index >= 0);
+
+  if (fundedIndexes.length <= 1) {
+    const fallbackIndex = fundedIndexes[0] ?? dealerIndex;
     return {
-      smallBlindIndex: dealerIndex,
-      bigBlindIndex: rotateIndex(dealerIndex, playerCount, 1),
+      dealerIndex: fallbackIndex,
+      smallBlindIndex: fallbackIndex,
+      bigBlindIndex: fallbackIndex,
+    };
+  }
+
+  const dealerPosition = fundedIndexes.indexOf(dealerIndex);
+  const normalizedDealerIndex =
+    dealerPosition >= 0 ? dealerIndex : nextFundedIndex(players, dealerIndex);
+  const normalizedDealerPosition = fundedIndexes.indexOf(normalizedDealerIndex);
+  const fundedOffset = (offset: number) =>
+    fundedIndexes[(normalizedDealerPosition + offset) % fundedIndexes.length];
+
+  if (fundedIndexes.length === 2) {
+    return {
+      dealerIndex: normalizedDealerIndex,
+      smallBlindIndex: normalizedDealerIndex,
+      bigBlindIndex: fundedOffset(1),
     };
   }
 
   return {
-    smallBlindIndex: rotateIndex(dealerIndex, playerCount, 1),
-    bigBlindIndex: rotateIndex(dealerIndex, playerCount, 2),
+    dealerIndex: normalizedDealerIndex,
+    smallBlindIndex: fundedOffset(1),
+    bigBlindIndex: fundedOffset(2),
   };
 }
 
@@ -671,15 +740,20 @@ function nextActiveIndex(players: Player[], fromIndex: number) {
 }
 
 function firstToActIndex(players: Player[], dealerIndex: number, street: Street) {
-  if (players.length <= 2) {
+  const fundedCount = fundedPlayers(players).length;
+  if (fundedCount <= 1) {
+    return nextFundedIndex(players, dealerIndex);
+  }
+
+  if (fundedCount === 2) {
     return street === "Preflop"
       ? dealerIndex
-      : rotateIndex(dealerIndex, players.length, 1);
+      : nextFundedIndex(players, dealerIndex);
   }
 
   return street === "Preflop"
-    ? rotateIndex(dealerIndex, players.length, 3)
-    : rotateIndex(dealerIndex, players.length, 1);
+    ? nextFundedIndex(players, nextFundedIndex(players, nextFundedIndex(players, dealerIndex)))
+    : nextFundedIndex(players, dealerIndex);
 }
 
 function resetBettingForStreet(state: TableState, street: Street): TableState {
@@ -700,6 +774,14 @@ function bettingIsClosed(state: TableState) {
     return true;
   }
 
+  const playersWhoCanAct = contenders.filter((player) => player.stack > 0);
+  if (
+    playersWhoCanAct.length <= 1 &&
+    playersWhoCanAct.every((player) => (state.contributions[player.id] ?? 0) === state.currentBet)
+  ) {
+    return true;
+  }
+
   return contenders.every((player) => {
     const contribution = state.contributions[player.id] ?? 0;
     return (
@@ -709,9 +791,9 @@ function bettingIsClosed(state: TableState) {
   });
 }
 
-function allContendersAreAllIn(state: TableState) {
+function bettingRunoutIsLocked(state: TableState) {
   const contenders = state.players.filter((player) => player.inHand);
-  return contenders.length > 1 && contenders.every((player) => player.stack === 0);
+  return contenders.length > 1 && contenders.filter((player) => player.stack > 0).length <= 1;
 }
 
 function maxSinglePotBetTotal(state: TableState) {
@@ -733,6 +815,11 @@ function nextStreetAfter(street: Street) {
   if (street === "Flop") return "Turn";
   if (street === "Turn") return "River";
   return "Showdown";
+}
+
+function advanceAllInRunout(state: TableState) {
+  const next = nextStreetAfter(state.street);
+  return resetBettingForStreet(state, next);
 }
 
 export function PokerTable({ screen = "table" }: { screen?: Screen }) {
@@ -852,9 +939,57 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
   function updatePlayer(id: string, patch: Partial<Player>) {
     setTable((current) => ({
       ...current,
-      players: current.players.map((player) =>
-        player.id === id ? { ...player, ...patch } : player,
+      players: current.players.map((player) => {
+        if (player.id !== id) {
+          return player;
+        }
+
+        const stack =
+          patch.stack !== undefined
+            ? Math.max(0, Number.isFinite(patch.stack) ? patch.stack : 0)
+            : player.stack;
+        const buyIn =
+          patch.buyIn !== undefined
+            ? Math.max(0, Number.isFinite(patch.buyIn) ? patch.buyIn : 0)
+            : player.buyIn;
+
+        return {
+          ...player,
+          ...patch,
+          stack,
+          buyIn,
+          inHand: stack > 0 && (patch.inHand ?? player.inHand),
+        };
+      }),
+    }));
+  }
+
+  function addChips(playerId: string, amount?: number) {
+    const player = table.players.find((candidate) => candidate.id === playerId);
+    if (!player) {
+      emitFeedback("blocked");
+      return;
+    }
+
+    const topUpAmount = Math.max(1, Math.round(amount ?? (player.buyIn || 100)));
+    emitFeedback("rebuy");
+    setTable((current) => ({
+      ...current,
+      players: current.players.map((candidate) =>
+        candidate.id === playerId
+          ? {
+              ...candidate,
+              buyIn: Math.max(candidate.buyIn, topUpAmount),
+              stack: candidate.stack + topUpAmount,
+              inHand:
+                current.street === "Showdown" && current.pot === 0 ? true : candidate.inHand,
+            }
+          : candidate,
       ),
+      ledger: [
+        { id: nextId(), label: `${player.name} adds ${currency(topUpAmount)} chips`, amount: topUpAmount },
+        ...current.ledger.slice(0, 10),
+      ],
     }));
   }
 
@@ -900,8 +1035,8 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
     }
 
     if (bettingIsClosed(state)) {
-      if (allContendersAreAllIn(state)) {
-        return resetBettingForStreet(state, "Showdown");
+      if (bettingRunoutIsLocked(state)) {
+        return advanceAllInRunout(state);
       }
 
       const next = nextStreetAfter(state.street);
@@ -1016,20 +1151,36 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
         { id: nextId(), label: `${winner.name} wins ${currency(current.pot)}`, amount: current.pot },
         ...current.ledger.slice(0, 10),
       ],
-      players: current.players.map((player) =>
-        player.id === playerId ? { ...player, stack: player.stack + current.pot } : player,
-      ),
+      players: current.players.map((player) => {
+        const stack = player.id === playerId ? player.stack + current.pot : player.stack;
+        return {
+          ...player,
+          stack,
+          inHand: stack > 0,
+        };
+      }),
       pot: 0,
       street: "Showdown",
     }));
   }
 
   function nextHand() {
+    if (fundedPlayers(table.players).length < 2) {
+      emitFeedback("needsChips");
+      return;
+    }
+
     emitFeedback("newHand");
     setTable((current) => {
-      const dealerIndex = rotateIndex(current.dealerIndex, current.players.length, 1);
+      const playablePlayers = fundedPlayers(current.players);
+      if (playablePlayers.length < 2) {
+        return current;
+      }
+
+      const dealerIndex = nextFundedIndex(current.players, current.dealerIndex);
       const { smallBlindIndex: nextSmallBlindIndex, bigBlindIndex: nextBigBlindIndex } =
-        getBlindIndexes(dealerIndex, current.players.length);
+        getFundedBlindIndexes(current.players, dealerIndex);
+      const effectiveStack = Math.min(...playablePlayers.map((player) => player.stack));
       let pot = 0;
       const contributions: Record<string, number> = {};
       const players = current.players.map((player, index) => {
@@ -1039,7 +1190,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
             : index === nextBigBlindIndex
               ? current.bigBlind
               : 0;
-        const paid = Math.min(blind, player.stack);
+        const paid = playerCanPlay(player) ? Math.min(blind, player.stack, effectiveStack) : 0;
         if (paid > 0) {
           pot += paid;
           contributions[player.id] = paid;
@@ -1047,17 +1198,17 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
         return {
           ...player,
           stack: Math.max(0, player.stack - paid),
-          inHand: player.stack > 0,
+          inHand: playerCanPlay(player),
         };
       });
-
-      return {
+      const currentBet = Math.max(0, ...Object.values(contributions));
+      const nextState: TableState = {
         ...current,
         players,
         dealerIndex,
         postedSmallBlind: true,
         postedBigBlind: true,
-        currentBet: current.bigBlind,
+        currentBet,
         contributions,
         actedPlayerIds: [],
         awaitingDeal: false,
@@ -1070,6 +1221,10 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
           ...current.ledger.slice(0, 10),
         ],
       };
+
+      return bettingIsClosed(nextState) && bettingRunoutIsLocked(nextState)
+        ? advanceAllInRunout(nextState)
+        : nextState;
     });
   }
 
@@ -1090,10 +1245,17 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
         {screen === "table" ? (
           <HandScreen
             activePlayers={activePlayers}
+            addChips={addChips}
             addPlayer={addPlayer}
             acknowledgeDeal={() => {
               emitFeedback(table.awaitingDeal ? "dealConfirmed" : "streetAdvance");
-              setTable((current) => ({ ...current, awaitingDeal: false }));
+              setTable((current) => {
+                if (bettingRunoutIsLocked(current)) {
+                  return advanceAllInRunout(current);
+                }
+
+                return { ...current, awaitingDeal: false };
+              });
             }}
             applyPlayerAction={applyPlayerAction}
             awardPot={awardPot}
@@ -1114,6 +1276,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
 
         {screen === "players" ? (
           <PlayersScreen
+            addChips={addChips}
             addPlayer={addPlayer}
             newPlayerName={newPlayerName}
             setNewPlayerName={setNewPlayerName}
@@ -1166,6 +1329,7 @@ function TopBar({ screen }: { screen: Screen }) {
 
 function HandScreen({
   activePlayers,
+  addChips,
   addPlayer,
   acknowledgeDeal,
   applyPlayerAction,
@@ -1184,6 +1348,7 @@ function HandScreen({
   toCall,
 }: {
   activePlayers: Player[];
+  addChips: (playerId: string, amount?: number) => void;
   addPlayer: () => void;
   acknowledgeDeal: () => void;
   applyPlayerAction: (action: "check" | "call" | "fold" | "raise", raiseTo?: number) => void;
@@ -1204,9 +1369,14 @@ function HandScreen({
   const currentPlayerColor = playerColorClass(Math.max(table.currentPlayerIndex, 0));
   const isShowdown = table.street === "Showdown";
   const needsWinner = isShowdown && table.pot > 0;
+  const playersNeedingChips = table.players.filter((player) => player.stack <= 0);
+  const fundedCount = fundedPlayers(table.players).length;
+  const needsChipsToContinue = isShowdown && table.pot === 0 && fundedCount < 2;
   const latestPayout = table.ledger.find((item) => item.label.includes(" wins "));
   const statusLabel = needsWinner
     ? "Choose winner"
+    : needsChipsToContinue
+      ? "Needs chips"
     : isShowdown
       ? "Pot paid"
       : currentPlayer
@@ -1233,6 +1403,8 @@ function HandScreen({
                 feedbackPulseClass(lastFeedbackEvent, ["check", "call", "raise", "allIn", "fold"]),
                 needsWinner
                   ? "border-black bg-primary text-primary-foreground"
+                  : needsChipsToContinue
+                    ? "border-black bg-destructive text-destructive-foreground"
                   : isShowdown
                     ? "border-black bg-emerald-600 text-white"
                     : currentPlayerColor,
@@ -1257,7 +1429,11 @@ function HandScreen({
         </div>
         <div className="mt-3 flex items-center justify-between gap-3 text-xs font-semibold text-muted-foreground">
           <span>
-            {needsWinner ? "Tap the player who won the physical hand." : instruction}
+            {needsWinner
+              ? "Tap the player who won the physical hand."
+              : needsChipsToContinue
+                ? "Cash game paused. Add chips to keep playing."
+                : instruction}
           </span>
           <span className="shrink-0 text-right">
             Small blind {currency(table.smallBlind)} · Big blind {currency(table.bigBlind)}
@@ -1301,15 +1477,28 @@ function HandScreen({
               />
             ) : (
               <div className="grid gap-3">
-                <div className="rounded-xl border bg-secondary px-4 py-4">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-muted-foreground">
-                    Hand complete
-                  </p>
-                  <p className="mt-1 text-xl font-black">
-                    {latestPayout?.label ?? "Pot has been paid"}
-                  </p>
-                </div>
-                <Button className="h-16 text-lg" size="lg" onClick={nextHand}>
+                {needsChipsToContinue ? (
+                  <NeedsChipsPanel
+                    addChips={addChips}
+                    lastFeedbackEvent={lastFeedbackEvent}
+                    players={playersNeedingChips}
+                  />
+                ) : (
+                  <div className="rounded-xl border bg-secondary px-4 py-4">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-muted-foreground">
+                      Hand complete
+                    </p>
+                    <p className="mt-1 text-xl font-black">
+                      {latestPayout?.label ?? "Pot has been paid"}
+                    </p>
+                  </div>
+                )}
+                <Button
+                  className="h-16 text-lg"
+                  disabled={needsChipsToContinue}
+                  size="lg"
+                  onClick={nextHand}
+                >
                   <RotateCcw aria-hidden="true" />
                   Start next hand
                 </Button>
@@ -1330,6 +1519,60 @@ function HandScreen({
         </div>
       </div>
     </section>
+  );
+}
+
+function NeedsChipsPanel({
+  addChips,
+  lastFeedbackEvent,
+  players,
+}: {
+  addChips: (playerId: string, amount?: number) => void;
+  lastFeedbackEvent: FeedbackState | null;
+  players: Player[];
+}) {
+  return (
+    <div
+      className={cn(
+        "motion-panel grid gap-3 rounded-xl border border-destructive/45 bg-destructive/10 p-3",
+        feedbackPulseClass(lastFeedbackEvent, ["needsChips", "rebuy"], "feedback-needs-chips"),
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <div className="grid size-11 shrink-0 place-items-center rounded-full bg-background text-destructive">
+          <PiggyBank aria-hidden="true" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-destructive">
+            Need two funded players
+          </p>
+          <p className="mt-1 text-lg font-black leading-tight">Add chips to continue</p>
+          <p className="mt-1 text-sm font-semibold text-muted-foreground">
+            A player needs a top-up before the next cash hand.
+          </p>
+        </div>
+      </div>
+      <div className="motion-list grid gap-2">
+        {players.map((player, index) => (
+          <Button
+            className="h-14 justify-between rounded-xl px-4"
+            key={player.id}
+            style={{ "--motion-delay": `${index * 34}ms` } as CSSProperties}
+            type="button"
+            variant="secondary"
+            onClick={() => addChips(player.id)}
+          >
+            <span className="text-left">
+              <span className="block font-bold">{player.name}</span>
+              <span className="block text-xs font-semibold text-muted-foreground">
+                Add buy-in {currency(player.buyIn || 100)}
+              </span>
+            </span>
+            <Plus aria-hidden="true" />
+          </Button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1659,12 +1902,14 @@ function WinnerList({
 }
 
 function PlayersScreen({
+  addChips,
   addPlayer,
   newPlayerName,
   setNewPlayerName,
   table,
   updatePlayer,
 }: {
+  addChips: (playerId: string, amount?: number) => void;
   addPlayer: () => void;
   newPlayerName: string;
   setNewPlayerName: (value: string) => void;
@@ -1681,6 +1926,7 @@ function PlayersScreen({
       <div className="motion-list grid gap-3">
         {table.players.map((player, index) => (
           <PlayerEditor
+            addChips={addChips}
             index={index}
             isDealer={index === table.dealerIndex}
             key={player.id}
@@ -1916,23 +2162,31 @@ function AddPlayerRow({
 }
 
 function PlayerEditor({
+  addChips,
   index,
   isDealer,
   player,
   style,
   updatePlayer,
 }: {
+  addChips: (playerId: string, amount?: number) => void;
   index: number;
   isDealer: boolean;
   player: Player;
   style?: CSSProperties;
   updatePlayer: (id: string, patch: Partial<Player>) => void;
 }) {
+  const isAllIn = player.inHand && player.stack <= 0;
+  const needsChips = !player.inHand && player.stack <= 0;
+  const canToggleInHand = player.stack > 0;
+
   return (
     <div
       className={cn(
         "motion-surface rounded-xl bg-secondary p-3 transition-[background-color,box-shadow,transform] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
         isDealer && "ring-2 ring-ring",
+        needsChips && "border border-destructive/45 bg-destructive/10",
+        isAllIn && "border border-primary/45 bg-primary/10",
       )}
       style={style}
     >
@@ -1944,8 +2198,15 @@ function PlayerEditor({
           onChange={(event) => updatePlayer(player.id, { name: event.target.value })}
         />
         <Button
-          aria-label={`${player.inHand ? "Remove" : "Return"} ${player.name} from hand`}
+          aria-label={
+            isAllIn
+              ? `${player.name} is all in for this hand`
+              : needsChips
+              ? `${player.name} needs chips before returning to the hand`
+              : `${player.inHand ? "Remove" : "Return"} ${player.name} from hand`
+          }
           className="rounded-xl"
+          disabled={!canToggleInHand}
           size="icon"
           variant={player.inHand ? "default" : "outline"}
           onClick={() => updatePlayer(player.id, { inHand: !player.inHand })}
@@ -1977,10 +2238,31 @@ function PlayerEditor({
           />
         </label>
       </div>
-      <p className="mt-3 text-sm font-semibold text-muted-foreground">
-        Seat {index + 1}
-        {isDealer ? " · Button" : ""}
-      </p>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-muted-foreground">
+          Seat {index + 1}
+          {isDealer ? " · Button" : ""}
+        </p>
+        {needsChips ? (
+          <Button
+            className="h-11 rounded-xl px-3"
+            type="button"
+            variant="destructive"
+            onClick={() => addChips(player.id)}
+          >
+            <PiggyBank aria-hidden="true" />
+            Add chips
+          </Button>
+        ) : isAllIn ? (
+          <span className="rounded-full bg-primary px-3 py-1 text-xs font-bold text-primary-foreground">
+            All in
+          </span>
+        ) : (
+          <span className="rounded-full bg-background px-3 py-1 text-xs font-bold text-muted-foreground">
+            {player.inHand ? "Playing" : "Sitting out"}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

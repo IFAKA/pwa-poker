@@ -12,7 +12,6 @@ import {
   Clock3,
   Minus,
   Moon,
-  PiggyBank,
   Plus,
   RotateCcw,
   Settings,
@@ -35,7 +34,6 @@ type Screen = "table" | "players" | "settings" | "history";
 type Player = {
   id: string;
   name: string;
-  buyIn: number;
   stack: number;
   inHand: boolean;
 };
@@ -80,8 +78,8 @@ const defaultFeedbackSettings: FeedbackSettings = {
 
 const initialState: TableState = {
   players: [
-    { id: "p1", name: "Player 1", buyIn: 100, stack: 99, inHand: true },
-    { id: "p2", name: "Player 2", buyIn: 100, stack: 98, inHand: true },
+    { id: "p1", name: "Player 1", stack: 99, inHand: true },
+    { id: "p2", name: "Player 2", stack: 98, inHand: true },
   ],
   dealerIndex: 0,
   smallBlind: 1,
@@ -119,8 +117,6 @@ type FeedbackEvent =
   | "dealConfirmed"
   | "potAwarded"
   | "newHand"
-  | "needsChips"
-  | "rebuy"
   | "themeChanged"
   | "reset"
   | "blocked";
@@ -359,31 +355,6 @@ const feedbackProfiles: Record<FeedbackEvent, FeedbackProfile> = {
       detuneCents: [0, 0, 6],
     },
     haptic: [8, 16, 8],
-    intensity: "success",
-  },
-  needsChips: {
-    audio: {
-      type: "triangle",
-      notes: [220, 174],
-      durationMs: 126,
-      peakGain: 0.014,
-      attackMs: 8,
-      gapMs: 8,
-      endNotes: [196, 147],
-    },
-    haptic: [12, 18],
-    intensity: "destructive",
-  },
-  rebuy: {
-    audio: {
-      type: "sine",
-      notes: [330, 440, 587],
-      durationMs: 156,
-      peakGain: 0.018,
-      attackMs: 6,
-      gapMs: 8,
-    },
-    haptic: [7, 14],
     intensity: "success",
   },
   themeChanged: {
@@ -948,48 +919,13 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
           patch.stack !== undefined
             ? Math.max(0, Number.isFinite(patch.stack) ? patch.stack : 0)
             : player.stack;
-        const buyIn =
-          patch.buyIn !== undefined
-            ? Math.max(0, Number.isFinite(patch.buyIn) ? patch.buyIn : 0)
-            : player.buyIn;
-
         return {
           ...player,
           ...patch,
           stack,
-          buyIn,
           inHand: stack > 0 && (patch.inHand ?? player.inHand),
         };
       }),
-    }));
-  }
-
-  function addChips(playerId: string, amount?: number) {
-    const player = table.players.find((candidate) => candidate.id === playerId);
-    if (!player) {
-      emitFeedback("blocked");
-      return;
-    }
-
-    const topUpAmount = Math.max(1, Math.round(amount ?? (player.buyIn || 100)));
-    emitFeedback("rebuy");
-    setTable((current) => ({
-      ...current,
-      players: current.players.map((candidate) =>
-        candidate.id === playerId
-          ? {
-              ...candidate,
-              buyIn: Math.max(candidate.buyIn, topUpAmount),
-              stack: candidate.stack + topUpAmount,
-              inHand:
-                current.street === "Showdown" && current.pot === 0 ? true : candidate.inHand,
-            }
-          : candidate,
-      ),
-      ledger: [
-        { id: nextId(), label: `${player.name} adds ${currency(topUpAmount)} chips`, amount: topUpAmount },
-        ...current.ledger.slice(0, 10),
-      ],
     }));
   }
 
@@ -1000,7 +936,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
       ...current,
       players: [
         ...current.players,
-        { id: nextId(), name, buyIn: 100, stack: 100, inHand: true },
+        { id: nextId(), name, stack: 100, inHand: true },
       ],
     }));
     setNewPlayerName("");
@@ -1166,7 +1102,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
 
   function nextHand() {
     if (fundedPlayers(table.players).length < 2) {
-      emitFeedback("needsChips");
+      emitFeedback("blocked");
       return;
     }
 
@@ -1228,6 +1164,58 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
     });
   }
 
+  function startNewGame() {
+    emitFeedback("newHand");
+    setTable((current) => {
+      const resetPlayers = current.players.map((player) => ({
+        ...player,
+        stack: 100,
+        inHand: true,
+      }));
+      const dealerIndex = 0;
+      const { smallBlindIndex: nextSmallBlindIndex, bigBlindIndex: nextBigBlindIndex } =
+        getFundedBlindIndexes(resetPlayers, dealerIndex);
+      let pot = 0;
+      const contributions: Record<string, number> = {};
+      const players = resetPlayers.map((player, index) => {
+        const blind =
+          index === nextSmallBlindIndex
+            ? current.smallBlind
+            : index === nextBigBlindIndex
+              ? current.bigBlind
+              : 0;
+        const paid = Math.min(blind, player.stack);
+        if (paid > 0) {
+          pot += paid;
+          contributions[player.id] = paid;
+        }
+
+        return {
+          ...player,
+          stack: Math.max(0, player.stack - paid),
+        };
+      });
+      const currentBet = Math.max(0, ...Object.values(contributions));
+
+      return {
+        ...current,
+        players,
+        dealerIndex,
+        postedSmallBlind: true,
+        postedBigBlind: true,
+        currentBet,
+        contributions,
+        actedPlayerIds: [],
+        awaitingDeal: false,
+        currentPlayerIndex: firstToActIndex(players, dealerIndex, "Preflop"),
+        street: "Preflop",
+        handNumber: 1,
+        pot,
+        ledger: [{ id: nextId(), label: "New game started", amount: pot }],
+      };
+    });
+  }
+
   function resetTable() {
     emitFeedback("reset");
     setTable((current) => ({
@@ -1245,7 +1233,6 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
         {screen === "table" ? (
           <HandScreen
             activePlayers={activePlayers}
-            addChips={addChips}
             addPlayer={addPlayer}
             acknowledgeDeal={() => {
               emitFeedback(table.awaitingDeal ? "dealConfirmed" : "streetAdvance");
@@ -1268,6 +1255,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
             emitFeedback={emitFeedback}
             setChipAmount={setChipAmount}
             setNewPlayerName={setNewPlayerName}
+            startNewGame={startNewGame}
             streetIndex={streetIndex}
             table={table}
             toCall={toCall}
@@ -1276,7 +1264,6 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
 
         {screen === "players" ? (
           <PlayersScreen
-            addChips={addChips}
             addPlayer={addPlayer}
             newPlayerName={newPlayerName}
             setNewPlayerName={setNewPlayerName}
@@ -1329,7 +1316,6 @@ function TopBar({ screen }: { screen: Screen }) {
 
 function HandScreen({
   activePlayers,
-  addChips,
   addPlayer,
   acknowledgeDeal,
   applyPlayerAction,
@@ -1343,12 +1329,12 @@ function HandScreen({
   nextHand,
   setChipAmount,
   setNewPlayerName,
+  startNewGame,
   streetIndex,
   table,
   toCall,
 }: {
   activePlayers: Player[];
-  addChips: (playerId: string, amount?: number) => void;
   addPlayer: () => void;
   acknowledgeDeal: () => void;
   applyPlayerAction: (action: "check" | "call" | "fold" | "raise", raiseTo?: number) => void;
@@ -1362,6 +1348,7 @@ function HandScreen({
   nextHand: () => void;
   setChipAmount: Dispatch<SetStateAction<number>>;
   setNewPlayerName: (value: string) => void;
+  startNewGame: () => void;
   streetIndex: number;
   table: TableState;
   toCall: number;
@@ -1369,14 +1356,12 @@ function HandScreen({
   const currentPlayerColor = playerColorClass(Math.max(table.currentPlayerIndex, 0));
   const isShowdown = table.street === "Showdown";
   const needsWinner = isShowdown && table.pot > 0;
-  const playersNeedingChips = table.players.filter((player) => player.stack <= 0);
-  const fundedCount = fundedPlayers(table.players).length;
-  const needsChipsToContinue = isShowdown && table.pot === 0 && fundedCount < 2;
+  const gameIsComplete = isShowdown && table.pot === 0 && fundedPlayers(table.players).length < 2;
   const latestPayout = table.ledger.find((item) => item.label.includes(" wins "));
   const statusLabel = needsWinner
     ? "Choose winner"
-    : needsChipsToContinue
-      ? "Needs chips"
+    : gameIsComplete
+      ? "Game complete"
     : isShowdown
       ? "Pot paid"
       : currentPlayer
@@ -1403,7 +1388,7 @@ function HandScreen({
                 feedbackPulseClass(lastFeedbackEvent, ["check", "call", "raise", "allIn", "fold"]),
                 needsWinner
                   ? "border-black bg-primary text-primary-foreground"
-                  : needsChipsToContinue
+                  : gameIsComplete
                     ? "border-black bg-destructive text-destructive-foreground"
                   : isShowdown
                     ? "border-black bg-emerald-600 text-white"
@@ -1431,8 +1416,8 @@ function HandScreen({
           <span>
             {needsWinner
               ? "Tap the player who won the physical hand."
-              : needsChipsToContinue
-                ? "Cash game paused. Add chips to keep playing."
+              : gameIsComplete
+                ? "A player has no chips. Start a new game."
                 : instruction}
           </span>
           <span className="shrink-0 text-right">
@@ -1477,12 +1462,8 @@ function HandScreen({
               />
             ) : (
               <div className="grid gap-3">
-                {needsChipsToContinue ? (
-                  <NeedsChipsPanel
-                    addChips={addChips}
-                    lastFeedbackEvent={lastFeedbackEvent}
-                    players={playersNeedingChips}
-                  />
+                {gameIsComplete ? (
+                  <GameCompletePanel table={table} />
                 ) : (
                   <div className="rounded-xl border bg-secondary px-4 py-4">
                     <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-muted-foreground">
@@ -1495,12 +1476,11 @@ function HandScreen({
                 )}
                 <Button
                   className="h-16 text-lg"
-                  disabled={needsChipsToContinue}
                   size="lg"
-                  onClick={nextHand}
+                  onClick={gameIsComplete ? startNewGame : nextHand}
                 >
                   <RotateCcw aria-hidden="true" />
-                  Start next hand
+                  {gameIsComplete ? "Start new game" : "Start next hand"}
                 </Button>
               </div>
             )
@@ -1522,54 +1502,38 @@ function HandScreen({
   );
 }
 
-function NeedsChipsPanel({
-  addChips,
-  lastFeedbackEvent,
-  players,
-}: {
-  addChips: (playerId: string, amount?: number) => void;
-  lastFeedbackEvent: FeedbackState | null;
-  players: Player[];
-}) {
+function GameCompletePanel({ table }: { table: TableState }) {
+  const winner = table.players.find((player) => player.stack > 0);
+  const finishedPlayers = table.players.filter((player) => player.stack <= 0);
+
   return (
-    <div
-      className={cn(
-        "motion-panel grid gap-3 rounded-xl border border-destructive/45 bg-destructive/10 p-3",
-        feedbackPulseClass(lastFeedbackEvent, ["needsChips", "rebuy"], "feedback-needs-chips"),
-      )}
-    >
+    <div className="motion-panel grid gap-3 rounded-xl border border-destructive/45 bg-destructive/10 p-3">
       <div className="flex items-start gap-3">
         <div className="grid size-11 shrink-0 place-items-center rounded-full bg-background text-destructive">
-          <PiggyBank aria-hidden="true" />
+          <Trophy aria-hidden="true" />
         </div>
         <div className="min-w-0">
           <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-destructive">
-            Need two funded players
+            Game complete
           </p>
-          <p className="mt-1 text-lg font-black leading-tight">Add chips to continue</p>
+          <p className="mt-1 text-lg font-black leading-tight">
+            {winner ? `${winner.name} wins the game` : "No players have chips"}
+          </p>
           <p className="mt-1 text-sm font-semibold text-muted-foreground">
-            A player needs a top-up before the next cash hand.
+            Start a new game to reset stacks and play again.
           </p>
         </div>
       </div>
       <div className="motion-list grid gap-2">
-        {players.map((player, index) => (
-          <Button
-            className="h-14 justify-between rounded-xl px-4"
+        {finishedPlayers.map((player, index) => (
+          <div
+            className="motion-surface flex min-h-12 items-center justify-between rounded-xl bg-background px-4 text-sm font-bold"
             key={player.id}
             style={{ "--motion-delay": `${index * 34}ms` } as CSSProperties}
-            type="button"
-            variant="secondary"
-            onClick={() => addChips(player.id)}
           >
-            <span className="text-left">
-              <span className="block font-bold">{player.name}</span>
-              <span className="block text-xs font-semibold text-muted-foreground">
-                Add buy-in {currency(player.buyIn || 100)}
-              </span>
-            </span>
-            <Plus aria-hidden="true" />
-          </Button>
+            <span>{player.name}</span>
+            <span className="text-muted-foreground">0 chips</span>
+          </div>
         ))}
       </div>
     </div>
@@ -1902,14 +1866,12 @@ function WinnerList({
 }
 
 function PlayersScreen({
-  addChips,
   addPlayer,
   newPlayerName,
   setNewPlayerName,
   table,
   updatePlayer,
 }: {
-  addChips: (playerId: string, amount?: number) => void;
   addPlayer: () => void;
   newPlayerName: string;
   setNewPlayerName: (value: string) => void;
@@ -1926,7 +1888,6 @@ function PlayersScreen({
       <div className="motion-list grid gap-3">
         {table.players.map((player, index) => (
           <PlayerEditor
-            addChips={addChips}
             index={index}
             isDealer={index === table.dealerIndex}
             key={player.id}
@@ -2162,14 +2123,12 @@ function AddPlayerRow({
 }
 
 function PlayerEditor({
-  addChips,
   index,
   isDealer,
   player,
   style,
   updatePlayer,
 }: {
-  addChips: (playerId: string, amount?: number) => void;
   index: number;
   isDealer: boolean;
   player: Player;
@@ -2177,7 +2136,7 @@ function PlayerEditor({
   updatePlayer: (id: string, patch: Partial<Player>) => void;
 }) {
   const isAllIn = player.inHand && player.stack <= 0;
-  const needsChips = !player.inHand && player.stack <= 0;
+  const gameFinished = !player.inHand && player.stack <= 0;
   const canToggleInHand = player.stack > 0;
 
   return (
@@ -2185,7 +2144,7 @@ function PlayerEditor({
       className={cn(
         "motion-surface rounded-xl bg-secondary p-3 transition-[background-color,box-shadow,transform] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
         isDealer && "ring-2 ring-ring",
-        needsChips && "border border-destructive/45 bg-destructive/10",
+        gameFinished && "border border-destructive/45 bg-destructive/10",
         isAllIn && "border border-primary/45 bg-primary/10",
       )}
       style={style}
@@ -2201,8 +2160,8 @@ function PlayerEditor({
           aria-label={
             isAllIn
               ? `${player.name} is all in for this hand`
-              : needsChips
-              ? `${player.name} needs chips before returning to the hand`
+              : gameFinished
+              ? `${player.name} finished with no chips`
               : `${player.inHand ? "Remove" : "Return"} ${player.name} from hand`
           }
           className="rounded-xl"
@@ -2214,18 +2173,7 @@ function PlayerEditor({
           {player.inHand ? <Check aria-hidden="true" /> : <UserRound aria-hidden="true" />}
         </Button>
       </div>
-      <div className="grid grid-cols-2 gap-2">
-        <label className="grid gap-1 text-sm font-semibold text-muted-foreground">
-          Buy-in
-          <Input
-            className="rounded-xl bg-background"
-            inputMode="numeric"
-            min={0}
-            type="number"
-            value={player.buyIn}
-            onChange={(event) => updatePlayer(player.id, { buyIn: Number(event.target.value) })}
-          />
-        </label>
+      <div className="grid gap-2">
         <label className="grid gap-1 text-sm font-semibold text-muted-foreground">
           Stack
           <Input
@@ -2243,16 +2191,10 @@ function PlayerEditor({
           Seat {index + 1}
           {isDealer ? " · Button" : ""}
         </p>
-        {needsChips ? (
-          <Button
-            className="h-11 rounded-xl px-3"
-            type="button"
-            variant="destructive"
-            onClick={() => addChips(player.id)}
-          >
-            <PiggyBank aria-hidden="true" />
-            Add chips
-          </Button>
+        {gameFinished ? (
+          <span className="rounded-full bg-destructive px-3 py-1 text-xs font-bold text-destructive-foreground">
+            No chips
+          </span>
         ) : isAllIn ? (
           <span className="rounded-full bg-primary px-3 py-1 text-xs font-bold text-primary-foreground">
             All in

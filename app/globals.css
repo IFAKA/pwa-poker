@@ -25,6 +25,7 @@
   --radius: 0.5rem;
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 .dark {
@@ -110,6 +111,189 @@ button {
   touch-action: manipulation;
 }
 
+.app-frame {
+  animation: app-frame-in 220ms var(--ease-out) both;
+}
+
+.screen-panel {
+  animation: screen-panel-in 220ms var(--ease-out) both;
+}
+
+.motion-panel {
+  animation: motion-panel-in 190ms var(--ease-out) both;
+}
+
+.motion-surface {
+  transition:
+    background-color 180ms var(--ease-out),
+    border-color 180ms var(--ease-out),
+    box-shadow 180ms var(--ease-out),
+    color 180ms ease,
+    opacity 180ms var(--ease-out),
+    transform 180ms var(--ease-out);
+}
+
+.motion-list > * {
+  animation: motion-list-in 220ms var(--ease-out) both;
+  animation-delay: var(--motion-delay, 0ms);
+}
+
+.motion-value {
+  display: inline-block;
+  animation: motion-value-in 180ms var(--ease-out) both;
+}
+
+.feedback-pulse {
+  animation: feedback-pulse-subtle 170ms var(--ease-out) both;
+}
+
+.feedback-commit {
+  animation-name: feedback-pulse-commit;
+}
+
+.feedback-success {
+  animation-name: feedback-pulse-success;
+  animation-duration: 240ms;
+}
+
+.feedback-destructive {
+  animation-name: feedback-pulse-destructive;
+}
+
+.feedback-street {
+  transform-origin: center;
+}
+
+.feedback-raise {
+  color: hsl(var(--primary));
+}
+
+.feedback-winners,
+.feedback-nav {
+  transform-origin: center;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .motion-pressable:hover {
+    transform: translateY(-1px);
+  }
+}
+
+@keyframes app-frame-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes screen-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes motion-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes motion-list-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes motion-value-in {
+  from {
+    filter: blur(2px);
+    opacity: 0.72;
+    transform: translateY(2px) scale(0.97);
+  }
+  to {
+    filter: blur(0);
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes feedback-pulse-subtle {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.018);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes feedback-pulse-commit {
+  0% {
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0);
+    transform: scale(1);
+  }
+  42% {
+    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.18);
+    transform: scale(1.025);
+  }
+  100% {
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0);
+    transform: scale(1);
+  }
+}
+
+@keyframes feedback-pulse-success {
+  0% {
+    box-shadow: 0 0 0 0 hsl(153 52% 46% / 0);
+    transform: scale(1);
+  }
+  38% {
+    box-shadow: 0 0 0 4px hsl(153 52% 46% / 0.2);
+    transform: scale(1.035);
+  }
+  100% {
+    box-shadow: 0 0 0 0 hsl(153 52% 46% / 0);
+    transform: scale(1);
+  }
+}
+
+@keyframes feedback-pulse-destructive {
+  0% {
+    box-shadow: 0 0 0 0 hsl(var(--destructive) / 0);
+    transform: translateX(0);
+  }
+  35% {
+    box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.16);
+    transform: translateX(-1px);
+  }
+  70% {
+    transform: translateX(1px);
+  }
+  100% {
+    box-shadow: 0 0 0 0 hsl(var(--destructive) / 0);
+    transform: translateX(0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   ::before,
@@ -118,6 +302,15 @@ button {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .app-frame,
+  .screen-panel,
+  .motion-panel,
+  .motion-list > *,
+  .motion-value,
+  .feedback-pulse {
+    transform: none !important;
   }
 }
 

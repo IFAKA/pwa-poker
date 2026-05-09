@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { Dispatch, SetStateAction } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, Dispatch, SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUp,
@@ -16,13 +16,15 @@ import {
   Plus,
   RotateCcw,
   Settings,
+  Smartphone,
   Sun,
   Trophy,
   UserRound,
   UsersRound,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -44,6 +46,11 @@ type LedgerItem = {
   amount: number;
 };
 
+type FeedbackSettings = {
+  soundEnabled: boolean;
+  hapticsEnabled: boolean;
+};
+
 type TableState = {
   players: Player[];
   dealerIndex: number;
@@ -61,10 +68,15 @@ type TableState = {
   handNumber: number;
   ledger: LedgerItem[];
   isDark: boolean;
+  feedback: FeedbackSettings;
 };
 
 const STORAGE_KEY = "table-stakes-state-v2";
 const streets: Street[] = ["Preflop", "Flop", "Turn", "River", "Showdown"];
+const defaultFeedbackSettings: FeedbackSettings = {
+  soundEnabled: true,
+  hapticsEnabled: true,
+};
 
 const initialState: TableState = {
   players: [
@@ -86,6 +98,213 @@ const initialState: TableState = {
   handNumber: 1,
   ledger: [],
   isDark: false,
+  feedback: defaultFeedbackSettings,
+};
+
+type FeedbackEvent =
+  | "nav"
+  | "press"
+  | "amountStep"
+  | "check"
+  | "call"
+  | "raise"
+  | "fold"
+  | "streetAdvance"
+  | "dealConfirmed"
+  | "potAwarded"
+  | "newHand"
+  | "themeChanged"
+  | "reset"
+  | "blocked";
+
+type FeedbackPayload = {
+  intensity?: FeedbackIntensity;
+};
+
+type FeedbackIntensity = "subtle" | "commit" | "success" | "destructive";
+
+type FeedbackProfile = {
+  audio: {
+    type: OscillatorType;
+    notes: number[];
+    durationMs: number;
+    peakGain: number;
+    attackMs?: number;
+    gapMs?: number;
+    noteDurationsMs?: number[];
+    detuneCents?: number[];
+    endNotes?: number[];
+  };
+  haptic: number | number[];
+  intensity: FeedbackIntensity;
+};
+
+type FeedbackState = {
+  event: FeedbackEvent;
+  key: number;
+  intensity: FeedbackIntensity;
+};
+
+type AudioContextConstructor = new () => AudioContext;
+
+const feedbackProfiles: Record<FeedbackEvent, FeedbackProfile> = {
+  nav: {
+    audio: { type: "sine", notes: [392, 523], durationMs: 86, peakGain: 0.014, attackMs: 5, gapMs: 7 },
+    haptic: 7,
+    intensity: "subtle",
+  },
+  press: {
+    audio: { type: "triangle", notes: [470], durationMs: 48, peakGain: 0.013, attackMs: 4 },
+    haptic: 5,
+    intensity: "subtle",
+  },
+  amountStep: {
+    audio: {
+      type: "square",
+      notes: [780, 620],
+      durationMs: 44,
+      peakGain: 0.006,
+      attackMs: 2,
+      gapMs: 2,
+      noteDurationsMs: [18, 18],
+    },
+    haptic: 4,
+    intensity: "subtle",
+  },
+  check: {
+    audio: { type: "sine", notes: [294, 370], durationMs: 104, peakGain: 0.019, attackMs: 8, gapMs: 16 },
+    haptic: 10,
+    intensity: "commit",
+  },
+  call: {
+    audio: {
+      type: "triangle",
+      notes: [330, 392, 330],
+      durationMs: 132,
+      peakGain: 0.021,
+      attackMs: 5,
+      gapMs: 6,
+    },
+    haptic: 12,
+    intensity: "commit",
+  },
+  raise: {
+    audio: {
+      type: "sawtooth",
+      notes: [392, 523, 698],
+      durationMs: 164,
+      peakGain: 0.014,
+      attackMs: 6,
+      gapMs: 5,
+      detuneCents: [0, 4, 0],
+    },
+    haptic: [7, 16, 9],
+    intensity: "commit",
+  },
+  fold: {
+    audio: {
+      type: "sine",
+      notes: [220, 150],
+      durationMs: 146,
+      peakGain: 0.017,
+      attackMs: 10,
+      gapMs: 10,
+      endNotes: [196, 132],
+    },
+    haptic: 16,
+    intensity: "destructive",
+  },
+  streetAdvance: {
+    audio: {
+      type: "sawtooth",
+      notes: [660, 520, 420],
+      durationMs: 142,
+      peakGain: 0.011,
+      attackMs: 4,
+      gapMs: 3,
+      endNotes: [610, 490, 390],
+    },
+    haptic: [6, 18],
+    intensity: "commit",
+  },
+  dealConfirmed: {
+    audio: {
+      type: "triangle",
+      notes: [740, 554],
+      durationMs: 94,
+      peakGain: 0.017,
+      attackMs: 3,
+      gapMs: 5,
+      noteDurationsMs: [28, 42],
+    },
+    haptic: 9,
+    intensity: "commit",
+  },
+  potAwarded: {
+    audio: {
+      type: "triangle",
+      notes: [440, 660, 880, 740],
+      durationMs: 236,
+      peakGain: 0.024,
+      attackMs: 7,
+      gapMs: 8,
+    },
+    haptic: [10, 18, 10, 22],
+    intensity: "success",
+  },
+  newHand: {
+    audio: {
+      type: "sine",
+      notes: [262, 392, 523],
+      durationMs: 214,
+      peakGain: 0.019,
+      attackMs: 9,
+      gapMs: 10,
+      detuneCents: [0, 0, 6],
+    },
+    haptic: [8, 16, 8],
+    intensity: "success",
+  },
+  themeChanged: {
+    audio: {
+      type: "sine",
+      notes: [622, 466],
+      durationMs: 118,
+      peakGain: 0.015,
+      attackMs: 12,
+      gapMs: 9,
+      endNotes: [659, 494],
+    },
+    haptic: 7,
+    intensity: "subtle",
+  },
+  reset: {
+    audio: {
+      type: "triangle",
+      notes: [330, 247, 185],
+      durationMs: 178,
+      peakGain: 0.018,
+      attackMs: 7,
+      gapMs: 7,
+      endNotes: [294, 220, 165],
+    },
+    haptic: [15, 20, 15],
+    intensity: "destructive",
+  },
+  blocked: {
+    audio: {
+      type: "square",
+      notes: [118, 118],
+      durationMs: 82,
+      peakGain: 0.007,
+      attackMs: 2,
+      gapMs: 18,
+      noteDurationsMs: [22, 22],
+      detuneCents: [0, -24],
+    },
+    haptic: [16, 16],
+    intensity: "destructive",
+  },
 };
 
 const navItems = [
@@ -160,10 +379,120 @@ function getStoredState(): TableState {
       currentBet: parsed.currentBet ?? 0,
       currentPlayerIndex: parsed.currentPlayerIndex ?? 0,
       awaitingDeal: parsed.awaitingDeal ?? false,
+      feedback: {
+        ...defaultFeedbackSettings,
+        ...(parsed.feedback ?? {}),
+      },
     } as TableState;
   } catch {
     return initialState;
   }
+}
+
+function getAudioContextConstructor(): AudioContextConstructor | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  return (
+    window.AudioContext ??
+    (window as Window & { webkitAudioContext?: AudioContextConstructor }).webkitAudioContext
+  );
+}
+
+function useInteractionFeedback(settings: FeedbackSettings) {
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const feedbackKeyRef = useRef(0);
+  const [lastFeedback, setLastFeedback] = useState<FeedbackState | null>(null);
+
+  const playCue = useCallback((profile: FeedbackProfile) => {
+    const AudioContextClass = getAudioContextConstructor();
+    if (!AudioContextClass) {
+      return;
+    }
+
+    try {
+      const context = audioContextRef.current ?? new AudioContextClass();
+      audioContextRef.current = context;
+
+      if (context.state === "suspended") {
+        context.resume().catch(() => undefined);
+      }
+
+      const startAt = context.currentTime + 0.005;
+      const totalDuration = profile.audio.durationMs / 1000;
+      const gap = (profile.audio.gapMs ?? 0) / 1000;
+      const totalGap = gap * Math.max(0, profile.audio.notes.length - 1);
+      const fallbackNoteDuration =
+        (totalDuration - totalGap) / Math.max(1, profile.audio.notes.length);
+      const attack = (profile.audio.attackMs ?? 8) / 1000;
+      const gain = context.createGain();
+
+      gain.gain.setValueAtTime(0.0001, startAt);
+      gain.gain.linearRampToValueAtTime(profile.audio.peakGain, startAt + attack);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startAt + totalDuration);
+      gain.connect(context.destination);
+
+      let noteStart = startAt;
+      profile.audio.notes.forEach((frequency, index) => {
+        const oscillator = context.createOscillator();
+        const noteDuration =
+          (profile.audio.noteDurationsMs?.[index] ?? fallbackNoteDuration * 1000) / 1000;
+        const noteEnd = noteStart + noteDuration;
+        const endFrequency = profile.audio.endNotes?.[index];
+
+        oscillator.type = profile.audio.type;
+        oscillator.frequency.setValueAtTime(frequency, noteStart);
+        oscillator.detune.setValueAtTime(profile.audio.detuneCents?.[index] ?? 0, noteStart);
+        if (endFrequency) {
+          oscillator.frequency.exponentialRampToValueAtTime(endFrequency, noteEnd);
+        }
+        oscillator.connect(gain);
+        oscillator.start(noteStart);
+        oscillator.stop(noteEnd + 0.01);
+        noteStart = noteEnd + gap;
+      });
+    } catch {
+      audioContextRef.current = null;
+    }
+  }, []);
+
+  const emitFeedback = useCallback(
+    (event: FeedbackEvent, payload?: FeedbackPayload) => {
+      const profile = feedbackProfiles[event];
+      const intensity = payload?.intensity ?? profile.intensity;
+
+      feedbackKeyRef.current += 1;
+      setLastFeedback({ event, key: feedbackKeyRef.current, intensity });
+
+      if (settings.hapticsEnabled && "vibrate" in navigator) {
+        navigator.vibrate(profile.haptic);
+      }
+
+      if (settings.soundEnabled) {
+        playCue(profile);
+      }
+    },
+    [playCue, settings.hapticsEnabled, settings.soundEnabled],
+  );
+
+  return {
+    emitFeedback,
+    feedbackKey: lastFeedback?.key ?? 0,
+    lastFeedbackEvent: lastFeedback,
+  };
+}
+
+function feedbackPulseClass(
+  lastFeedback: FeedbackState | null,
+  events: FeedbackEvent[],
+  className = "",
+) {
+  if (!lastFeedback || !events.includes(lastFeedback.event)) {
+    return "";
+  }
+
+  return cn("feedback-pulse", `feedback-${lastFeedback.intensity}`, className);
 }
 
 function nextActiveIndex(players: Player[], fromIndex: number) {
@@ -233,6 +562,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
   const [hasHydrated, setHasHydrated] = useState(false);
   const [newPlayerName, setNewPlayerName] = useState("");
   const [chipAmount, setChipAmount] = useState(4);
+  const { emitFeedback, feedbackKey, lastFeedbackEvent } = useInteractionFeedback(table.feedback);
 
   useEffect(() => {
     const restoreId = window.setTimeout(() => {
@@ -348,6 +678,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
 
   function addPlayer() {
     const name = newPlayerName.trim() || `Player ${table.players.length + 1}`;
+    emitFeedback("press");
     setTable((current) => ({
       ...current,
       players: [
@@ -400,9 +731,11 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
   function applyPlayerAction(action: "check" | "call" | "fold" | "raise", raiseTo?: number) {
     const actor = table.players[table.currentPlayerIndex];
     if (!actor || table.awaitingDeal || table.street === "Showdown") {
+      emitFeedback("blocked");
       return;
     }
 
+    emitFeedback(action);
     setTable((current) => {
       const currentActor = current.players[current.currentPlayerIndex];
       if (!currentActor) {
@@ -466,9 +799,11 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
   function awardPot(playerId: string) {
     const winner = table.players.find((player) => player.id === playerId);
     if (!winner || table.pot <= 0) {
+      emitFeedback("blocked");
       return;
     }
 
+    emitFeedback("potAwarded");
     setTable((current) => ({
       ...current,
       ledger: [
@@ -484,6 +819,7 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
   }
 
   function nextHand() {
+    emitFeedback("newHand");
     setTable((current) => {
       const dealerIndex = rotateIndex(current.dealerIndex, current.players.length, 1);
       const { smallBlindIndex: nextSmallBlindIndex, bigBlindIndex: nextBigBlindIndex } =
@@ -532,12 +868,17 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
   }
 
   function resetTable() {
-    setTable(initialState);
+    emitFeedback("reset");
+    setTable((current) => ({
+      ...initialState,
+      isDark: current.isDark,
+      feedback: current.feedback,
+    }));
   }
 
   return (
     <main className="min-h-svh overflow-hidden bg-background px-4 pb-[calc(env(safe-area-inset-bottom)+68px)] pt-[calc(env(safe-area-inset-top)+8px)] text-foreground">
-      <div className="mx-auto flex h-[calc(100svh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-76px)] w-full max-w-md flex-col overflow-hidden">
+      <div className="app-frame mx-auto flex h-[calc(100svh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-76px)] w-full max-w-md flex-col overflow-hidden">
         <TopBar
           pathname={pathname}
           screen={screen}
@@ -547,14 +888,20 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
           <HandScreen
             activePlayers={activePlayers}
             addPlayer={addPlayer}
-            acknowledgeDeal={() => setTable((current) => ({ ...current, awaitingDeal: false }))}
+            acknowledgeDeal={() => {
+              emitFeedback(table.awaitingDeal ? "dealConfirmed" : "streetAdvance");
+              setTable((current) => ({ ...current, awaitingDeal: false }));
+            }}
             applyPlayerAction={applyPlayerAction}
             awardPot={awardPot}
             chipAmount={chipAmount}
             currentPlayer={currentPlayer}
+            feedbackKey={feedbackKey}
             instruction={instruction}
+            lastFeedbackEvent={lastFeedbackEvent}
             newPlayerName={newPlayerName}
             nextHand={nextHand}
+            emitFeedback={emitFeedback}
             setChipAmount={setChipAmount}
             setNewPlayerName={setNewPlayerName}
             streetIndex={streetIndex}
@@ -576,10 +923,20 @@ export function PokerTable({ screen = "table" }: { screen?: Screen }) {
         {screen === "history" ? <HistoryScreen table={table} /> : null}
 
         {screen === "settings" ? (
-          <SettingsScreen resetTable={resetTable} setTable={setTable} table={table} />
+          <SettingsScreen
+            emitFeedback={emitFeedback}
+            resetTable={resetTable}
+            setTable={setTable}
+            table={table}
+          />
         ) : null}
       </div>
-      <BottomNav pathname={pathname} />
+      <BottomNav
+        emitFeedback={emitFeedback}
+        feedbackKey={feedbackKey}
+        lastFeedbackEvent={lastFeedbackEvent}
+        pathname={pathname}
+      />
     </main>
   );
 }
@@ -603,7 +960,7 @@ function TopBar({
         : "Setup";
 
   return (
-    <header className="mb-4 flex min-h-12 items-center justify-between gap-3">
+    <header className="motion-panel mb-4 flex min-h-12 items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1">
         {pathname !== "/" ? (
           <Button aria-label="Back to current hand" asChild size="icon" variant="ghost">
@@ -627,7 +984,10 @@ function HandScreen({
   awardPot,
   chipAmount,
   currentPlayer,
+  emitFeedback,
+  feedbackKey,
   instruction,
+  lastFeedbackEvent,
   newPlayerName,
   nextHand,
   setChipAmount,
@@ -643,7 +1003,10 @@ function HandScreen({
   awardPot: (playerId: string) => void;
   chipAmount: number;
   currentPlayer?: Player;
+  emitFeedback: (event: FeedbackEvent, payload?: FeedbackPayload) => void;
+  feedbackKey: number;
   instruction: string;
+  lastFeedbackEvent: FeedbackState | null;
   newPlayerName: string;
   nextHand: () => void;
   setChipAmount: Dispatch<SetStateAction<number>>;
@@ -665,16 +1028,25 @@ function HandScreen({
         : "Player turn";
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col">
-      <div className={cn("mb-2 rounded-xl bg-secondary px-4 py-3", needsWinner && "bg-primary/10")}>
+    <section className="screen-panel flex min-h-0 flex-1 flex-col">
+      <div
+        className={cn(
+          "motion-surface mb-2 rounded-xl bg-secondary px-4 py-3",
+          needsWinner && "bg-primary/10",
+          feedbackPulseClass(lastFeedbackEvent, ["check", "call", "raise", "fold", "potAwarded"]),
+        )}
+        key={`hand-status-${feedbackKey}`}
+      >
         <div className="grid grid-cols-[1fr_auto] items-start gap-3">
           <div className="min-w-0">
             <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-muted-foreground">
               Hand {table.handNumber} · {table.street}
             </p>
             <p
+              key={statusLabel}
               className={cn(
-                "mt-1 inline-block max-w-full truncate rounded-lg border-2 px-2.5 py-1 text-2xl font-black leading-none shadow-[2px_2px_0_#000] transition-[background-color,border-color,color,box-shadow,transform] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
+                "motion-panel mt-1 inline-block max-w-full truncate rounded-lg border-2 px-2.5 py-1 text-2xl font-black leading-none shadow-[2px_2px_0_#000] transition-[background-color,border-color,color,box-shadow,transform] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
+                feedbackPulseClass(lastFeedbackEvent, ["check", "call", "raise", "fold"]),
                 needsWinner
                   ? "border-black bg-primary text-primary-foreground"
                   : isShowdown
@@ -687,7 +1059,17 @@ function HandScreen({
           </div>
           <div className="text-right">
             <p className="text-[11px] font-semibold text-muted-foreground">Total pot</p>
-            <p className="text-3xl font-black leading-none">{currency(table.pot)}</p>
+            <p className="text-3xl font-black leading-none">
+              <span
+                key={`pot-${table.pot}-${feedbackKey}`}
+                className={cn(
+                  "motion-value",
+                  feedbackPulseClass(lastFeedbackEvent, ["call", "raise", "potAwarded", "newHand"]),
+                )}
+              >
+                {currency(table.pot)}
+              </span>
+            </p>
           </div>
         </div>
         <div className="mt-3 flex items-center justify-between gap-3 text-xs font-semibold text-muted-foreground">
@@ -706,15 +1088,19 @@ function HandScreen({
             className={cn(
               "h-1.5 rounded-full bg-muted transition-[background-color,transform] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
               index <= streetIndex && "scale-y-125 bg-primary",
+              feedbackPulseClass(lastFeedbackEvent, ["streetAdvance", "dealConfirmed"], "feedback-street"),
             )}
-            key={street}
+            key={`${street}-${feedbackKey}`}
             title={street}
           />
         ))}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto pb-4 pt-2 [-webkit-overflow-scrolling:touch]">
-        <div className="grid gap-3">
+        <div
+          className="motion-list grid gap-3"
+          key={`${table.street}-${table.awaitingDeal}-${table.pot > 0}-${currentPlayer?.id ?? "none"}`}
+        >
           {table.players.length < 2 ? (
             <AddPlayerRow
               addPlayer={addPlayer}
@@ -727,7 +1113,13 @@ function HandScreen({
             </Button>
           ) : table.street === "Showdown" ? (
             table.pot > 0 ? (
-              <WinnerList players={activePlayers} awardPot={awardPot} pot={table.pot} />
+              <WinnerList
+                feedbackKey={feedbackKey}
+                lastFeedbackEvent={lastFeedbackEvent}
+                players={activePlayers}
+                awardPot={awardPot}
+                pot={table.pot}
+              />
             ) : (
               <div className="grid gap-3">
                 <div className="rounded-xl border bg-secondary px-4 py-4">
@@ -749,6 +1141,9 @@ function HandScreen({
               applyPlayerAction={applyPlayerAction}
               chipAmount={chipAmount}
               currentPlayer={currentPlayer}
+              emitFeedback={emitFeedback}
+              feedbackKey={feedbackKey}
+              lastFeedbackEvent={lastFeedbackEvent}
               setChipAmount={setChipAmount}
               table={table}
               toCall={toCall}
@@ -764,6 +1159,9 @@ function BettingAction({
   applyPlayerAction,
   chipAmount,
   currentPlayer,
+  emitFeedback,
+  feedbackKey,
+  lastFeedbackEvent,
   setChipAmount,
   table,
   toCall,
@@ -771,6 +1169,9 @@ function BettingAction({
   applyPlayerAction: (action: "check" | "call" | "fold" | "raise", raiseTo?: number) => void;
   chipAmount: number;
   currentPlayer?: Player;
+  emitFeedback: (event: FeedbackEvent, payload?: FeedbackPayload) => void;
+  feedbackKey: number;
+  lastFeedbackEvent: FeedbackState | null;
   setChipAmount: Dispatch<SetStateAction<number>>;
   table: TableState;
   toCall: number;
@@ -798,8 +1199,12 @@ function BettingAction({
     Math.max(raiseMinimum, table.currentBet + table.pot + toCall),
   );
 
-  function setRaiseTo(amount: number) {
-    setChipAmount(Math.min(Math.max(amount, raiseMinimum), maxRaiseTo));
+  function setRaiseTo(amount: number, shouldEmit = true) {
+    const nextAmount = Math.min(Math.max(amount, raiseMinimum), maxRaiseTo);
+    if (shouldEmit && nextAmount !== raiseTo) {
+      emitFeedback("amountStep");
+    }
+    setChipAmount(nextAmount);
   }
 
   function stopHold() {
@@ -817,9 +1222,16 @@ function BettingAction({
     const base = Math.max(1, Math.round(table.smallBlind));
     const multiplier = elapsedMs > 2600 ? 20 : elapsedMs > 1800 ? 10 : elapsedMs > 1000 ? 5 : 1;
 
-    setChipAmount((current) =>
-      Math.min(Math.max(current + direction * base * multiplier, raiseMinimum), maxRaiseTo),
-    );
+    setChipAmount((current) => {
+      const nextAmount = Math.min(
+        Math.max(current + direction * base * multiplier, raiseMinimum),
+        maxRaiseTo,
+      );
+      if (nextAmount !== current) {
+        emitFeedback("amountStep");
+      }
+      return nextAmount;
+    });
   }
 
   function startHold(direction: -1 | 1) {
@@ -841,14 +1253,24 @@ function BettingAction({
 
   return (
     <div className="grid gap-3">
-      <div className="grid gap-3 rounded-xl border bg-background/35 p-3">
+      <div className="motion-panel grid gap-3 rounded-xl border bg-background/35 p-3">
         <div className="flex items-end justify-between gap-3">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-muted-foreground">
               Optional raise
             </p>
             <p className="mt-1 text-sm font-bold text-muted-foreground">Total bet would be</p>
-            <p className="mt-0.5 text-3xl font-black leading-none">{currency(raiseTo)}</p>
+            <p className="mt-0.5 text-3xl font-black leading-none">
+              <span
+                key={`raise-${raiseTo}-${feedbackKey}`}
+                className={cn(
+                  "motion-value",
+                  feedbackPulseClass(lastFeedbackEvent, ["amountStep"], "feedback-raise"),
+                )}
+              >
+                {currency(raiseTo)}
+              </span>
+            </p>
           </div>
           <div className="text-right text-xs font-semibold text-muted-foreground">
             <p>Minimum total {currency(Math.min(raiseMinimum, maxRaiseTo))}</p>
@@ -879,13 +1301,14 @@ function BettingAction({
           >
             <Minus aria-hidden="true" />
           </Button>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(2.75rem,1fr))] gap-2">
-            {chipValues.map((amount) => (
+          <div className="motion-list grid grid-cols-[repeat(auto-fit,minmax(2.75rem,1fr))] gap-2">
+            {chipValues.map((amount, index) => (
               <Button
                 aria-label={`Add ${currency(amount)} to raise`}
                 className="aspect-square h-auto rounded-full border-2 text-base shadow-sm"
                 disabled={!canRaise}
                 key={amount}
+                style={{ "--motion-delay": `${index * 34}ms` } as CSSProperties}
                 type="button"
                 variant="outline"
                 onClick={() => setRaiseTo(raiseTo + amount)}
@@ -918,10 +1341,11 @@ function BettingAction({
           </Button>
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="motion-list grid grid-cols-3 gap-2">
           <Button
             className="h-11 rounded-lg"
             disabled={!canRaise}
+            style={{ "--motion-delay": "0ms" } as CSSProperties}
             type="button"
             variant={raiseTo === Math.min(raiseMinimum, maxRaiseTo) ? "default" : "outline"}
             onClick={() => setRaiseTo(raiseMinimum)}
@@ -931,6 +1355,7 @@ function BettingAction({
           <Button
             className="h-11 rounded-lg"
             disabled={!canRaise}
+            style={{ "--motion-delay": "34ms" } as CSSProperties}
             type="button"
             variant={raiseTo === potRaiseTo ? "default" : "outline"}
             onClick={() => setRaiseTo(potRaiseTo)}
@@ -940,6 +1365,7 @@ function BettingAction({
           <Button
             className="h-11 rounded-lg"
             disabled={!canRaise}
+            style={{ "--motion-delay": "68ms" } as CSSProperties}
             type="button"
             variant={isAllIn ? "default" : "outline"}
             onClick={() => setRaiseTo(maxRaiseTo)}
@@ -959,12 +1385,13 @@ function BettingAction({
         </Button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="motion-list grid grid-cols-2 gap-2">
         {toCall > 0 ? (
           <Button
             aria-label={`Call ${currency(toCall)}`}
             className="h-14 rounded-xl text-base"
             disabled={!currentPlayer}
+            style={{ "--motion-delay": "0ms" } as CSSProperties}
             size="lg"
             onClick={() => applyPlayerAction("call")}
           >
@@ -975,6 +1402,7 @@ function BettingAction({
           <Button
             className="h-14 rounded-xl text-base"
             disabled={!currentPlayer}
+            style={{ "--motion-delay": "0ms" } as CSSProperties}
             size="lg"
             onClick={() => applyPlayerAction("check")}
           >
@@ -986,6 +1414,7 @@ function BettingAction({
           aria-label="Fold"
           className="h-14 rounded-xl text-base"
           disabled={!currentPlayer}
+          style={{ "--motion-delay": "34ms" } as CSSProperties}
           variant="outline"
           onClick={() => applyPlayerAction("fold")}
         >
@@ -999,20 +1428,31 @@ function BettingAction({
 
 function WinnerList({
   awardPot,
+  feedbackKey,
+  lastFeedbackEvent,
   players,
   pot,
 }: {
   awardPot: (playerId: string) => void;
+  feedbackKey: number;
+  lastFeedbackEvent: FeedbackState | null;
   players: Player[];
   pot: number;
 }) {
   return (
-    <div className="grid gap-2">
-      {players.map((player) => (
+    <div
+      className={cn(
+        "motion-list grid gap-2",
+        feedbackPulseClass(lastFeedbackEvent, ["potAwarded"], "feedback-winners"),
+      )}
+      key={`winners-${feedbackKey}`}
+    >
+      {players.map((player, index) => (
         <Button
           className="h-auto min-h-16 justify-between rounded-xl px-4 py-4 text-left"
           key={player.id}
           size="lg"
+          style={{ "--motion-delay": `${index * 34}ms` } as CSSProperties}
           variant="secondary"
           onClick={() => awardPot(player.id)}
         >
@@ -1041,19 +1481,20 @@ function PlayersScreen({
   updatePlayer: (id: string, patch: Partial<Player>) => void;
 }) {
   return (
-    <section className="flex flex-1 flex-col gap-4">
+    <section className="screen-panel flex flex-1 flex-col gap-4">
       <AddPlayerRow
         addPlayer={addPlayer}
         newPlayerName={newPlayerName}
         setNewPlayerName={setNewPlayerName}
       />
-      <div className="grid gap-3">
+      <div className="motion-list grid gap-3">
         {table.players.map((player, index) => (
           <PlayerEditor
             index={index}
             isDealer={index === table.dealerIndex}
             key={player.id}
             player={player}
+            style={{ "--motion-delay": `${index * 34}ms` } as CSSProperties}
             updatePlayer={updatePlayer}
           />
         ))}
@@ -1063,18 +1504,34 @@ function PlayersScreen({
 }
 
 function SettingsScreen({
+  emitFeedback,
   resetTable,
   setTable,
   table,
 }: {
+  emitFeedback: (event: FeedbackEvent, payload?: FeedbackPayload) => void;
   resetTable: () => void;
   setTable: Dispatch<SetStateAction<TableState>>;
   table: TableState;
 }) {
+  function updateFeedbackSettings(patch: Partial<FeedbackSettings>) {
+    emitFeedback("press");
+    setTable((current) => ({
+      ...current,
+      feedback: {
+        ...current.feedback,
+        ...patch,
+      },
+    }));
+  }
+
   return (
-    <section className="flex flex-1 flex-col justify-between gap-6">
-      <div className="grid gap-4">
-        <div className="rounded-xl bg-secondary p-3">
+    <section className="screen-panel flex min-h-0 flex-1 flex-col justify-between gap-6">
+      <div className="motion-list grid min-h-0 gap-4 overflow-y-auto pb-2 [-webkit-overflow-scrolling:touch]">
+        <div
+          className="motion-surface rounded-xl bg-secondary p-3"
+          style={{ "--motion-delay": "0ms" } as CSSProperties}
+        >
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
               <p className="text-xs font-bold uppercase tracking-[0.12em] text-muted-foreground">
@@ -1093,7 +1550,12 @@ function SettingsScreen({
               aria-pressed={!table.isDark}
               className="h-12 rounded-xl"
               variant={!table.isDark ? "default" : "outline"}
-              onClick={() => setTable((current) => ({ ...current, isDark: false }))}
+              onClick={() => {
+                if (table.isDark) {
+                  emitFeedback("themeChanged");
+                }
+                setTable((current) => ({ ...current, isDark: false }));
+              }}
             >
               <Sun aria-hidden="true" />
               Light
@@ -1102,7 +1564,12 @@ function SettingsScreen({
               aria-pressed={table.isDark}
               className="h-12 rounded-xl"
               variant={table.isDark ? "default" : "outline"}
-              onClick={() => setTable((current) => ({ ...current, isDark: true }))}
+              onClick={() => {
+                if (!table.isDark) {
+                  emitFeedback("themeChanged");
+                }
+                setTable((current) => ({ ...current, isDark: true }));
+              }}
             >
               <Moon aria-hidden="true" />
               Dark
@@ -1110,7 +1577,60 @@ function SettingsScreen({
           </div>
         </div>
 
-        <label className="grid gap-2 text-sm font-semibold text-muted-foreground">
+        <div
+          className="motion-surface rounded-xl bg-secondary p-3"
+          style={{ "--motion-delay": "34ms" } as CSSProperties}
+        >
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.12em] text-muted-foreground">
+                Feedback
+              </p>
+              <p className="mt-1 text-lg font-bold">
+                Sound {table.feedback.soundEnabled ? "on" : "off"} · Haptics{" "}
+                {table.feedback.hapticsEnabled ? "on" : "off"}
+              </p>
+            </div>
+            {table.feedback.soundEnabled ? (
+              <Volume2 aria-hidden="true" className="size-5 text-muted-foreground" />
+            ) : (
+              <VolumeX aria-hidden="true" className="size-5 text-muted-foreground" />
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              aria-pressed={table.feedback.soundEnabled}
+              className="h-12 rounded-xl"
+              variant={table.feedback.soundEnabled ? "default" : "outline"}
+              onClick={() =>
+                updateFeedbackSettings({ soundEnabled: !table.feedback.soundEnabled })
+              }
+            >
+              {table.feedback.soundEnabled ? (
+                <Volume2 aria-hidden="true" />
+              ) : (
+                <VolumeX aria-hidden="true" />
+              )}
+              Sound
+            </Button>
+            <Button
+              aria-pressed={table.feedback.hapticsEnabled}
+              className="h-12 rounded-xl"
+              variant={table.feedback.hapticsEnabled ? "default" : "outline"}
+              onClick={() =>
+                updateFeedbackSettings({ hapticsEnabled: !table.feedback.hapticsEnabled })
+              }
+            >
+              <Smartphone aria-hidden="true" />
+              Haptics
+            </Button>
+          </div>
+        </div>
+
+        <label
+          className="grid gap-2 text-sm font-semibold text-muted-foreground"
+          style={{ "--motion-delay": "68ms" } as CSSProperties}
+        >
           Small blind
           <Input
             className="h-14 text-xl font-bold"
@@ -1123,7 +1643,10 @@ function SettingsScreen({
             }
           />
         </label>
-        <label className="grid gap-2 text-sm font-semibold text-muted-foreground">
+        <label
+          className="grid gap-2 text-sm font-semibold text-muted-foreground"
+          style={{ "--motion-delay": "102ms" } as CSSProperties}
+        >
           Big blind
           <Input
             className="h-14 text-xl font-bold"
@@ -1138,7 +1661,7 @@ function SettingsScreen({
         </label>
       </div>
 
-      <div className="grid gap-3">
+      <div className="motion-panel grid gap-3">
         <p className="text-sm leading-6 text-muted-foreground">
           Use the physical deck for every shuffle, burn, and board card. The app handles blinds,
           turns, bets, stacks, pot, and payout.
@@ -1153,13 +1676,14 @@ function SettingsScreen({
 
 function HistoryScreen({ table }: { table: TableState }) {
   return (
-    <section className="flex flex-1 flex-col">
+    <section className="screen-panel flex flex-1 flex-col">
       {table.ledger.length ? (
-        <div className="grid gap-2">
-          {table.ledger.map((item) => (
+        <div className="motion-list grid gap-2">
+          {table.ledger.map((item, index) => (
             <div
-              className="flex min-h-14 items-center justify-between rounded-xl bg-secondary px-4 text-sm transition-[background-color,transform] duration-150 ease-[var(--ease-out)] motion-reduce:transition-none"
+              className="motion-surface flex min-h-14 items-center justify-between rounded-xl bg-secondary px-4 text-sm transition-[background-color,transform] duration-150 ease-[var(--ease-out)] motion-reduce:transition-none"
               key={item.id}
+              style={{ "--motion-delay": `${index * 34}ms` } as CSSProperties}
             >
               <span>{item.label}</span>
               <span className="font-bold">{currency(item.amount)}</span>
@@ -1185,7 +1709,7 @@ function AddPlayerRow({
   setNewPlayerName: (value: string) => void;
 }) {
   return (
-    <div className="grid grid-cols-[1fr_auto] gap-2">
+    <div className="motion-panel grid grid-cols-[1fr_auto] gap-2">
       <Input
         aria-label="New player name"
         className="h-12 rounded-xl"
@@ -1204,19 +1728,22 @@ function PlayerEditor({
   index,
   isDealer,
   player,
+  style,
   updatePlayer,
 }: {
   index: number;
   isDealer: boolean;
   player: Player;
+  style?: CSSProperties;
   updatePlayer: (id: string, patch: Partial<Player>) => void;
 }) {
   return (
     <div
       className={cn(
-        "rounded-xl bg-secondary p-3 transition-[background-color,box-shadow] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
+        "motion-surface rounded-xl bg-secondary p-3 transition-[background-color,box-shadow,transform] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
         isDealer && "ring-2 ring-ring",
       )}
+      style={style}
     >
       <div className="mb-3 flex items-center justify-between gap-2">
         <Input
@@ -1267,11 +1794,27 @@ function PlayerEditor({
   );
 }
 
-function BottomNav({ pathname }: { pathname: string }) {
+function BottomNav({
+  emitFeedback,
+  feedbackKey,
+  lastFeedbackEvent,
+  pathname,
+}: {
+  emitFeedback: (event: FeedbackEvent, payload?: FeedbackPayload) => void;
+  feedbackKey: number;
+  lastFeedbackEvent: FeedbackState | null;
+  pathname: string;
+}) {
   return (
     <nav className="fixed inset-x-0 bottom-0 z-20 border-t bg-background/92 px-3 pb-[calc(env(safe-area-inset-bottom)+6px)] pt-1.5 backdrop-blur">
-      <div className="mx-auto grid max-w-md grid-cols-4 gap-1">
-        {navItems.map((item) => {
+      <div
+        className={cn(
+          "motion-list mx-auto grid max-w-md grid-cols-4 gap-1",
+          feedbackPulseClass(lastFeedbackEvent, ["nav"], "feedback-nav"),
+        )}
+        key={`nav-${feedbackKey}`}
+      >
+        {navItems.map((item, index) => {
           const isActive = pathname === item.href;
           return (
             <Link
@@ -1283,6 +1826,12 @@ function BottomNav({ pathname }: { pathname: string }) {
               )}
               href={item.href}
               key={item.href}
+              onClick={() => {
+                if (!isActive) {
+                  emitFeedback("nav");
+                }
+              }}
+              style={{ "--motion-delay": `${index * 34}ms` } as CSSProperties}
             >
               <item.icon aria-hidden="true" className="size-5" />
               <span className="sr-only">{item.label}</span>

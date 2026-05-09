@@ -789,7 +789,7 @@ function BettingAction({
   const chipValues = Array.from(
     new Set(
       [table.smallBlind, table.bigBlind, table.bigBlind * 2, table.bigBlind * 5]
-        .filter((amount) => amount > 0)
+        .filter((amount) => amount > 1)
         .map((amount) => Math.round(amount)),
     ),
   );
@@ -879,7 +879,7 @@ function BettingAction({
           >
             <Minus aria-hidden="true" />
           </Button>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(2.75rem,1fr))] gap-2">
             {chipValues.map((amount) => (
               <Button
                 aria-label={`Add ${currency(amount)} to raise`}
